@@ -31,6 +31,7 @@ export function initBooleanMode({ applyBoolean }) {
  * @param {'subtract'|'union'} operation - Boolean operation type
  */
 export function startBooleanMode(bodyIdA, operation) {
+    window.dispatchEvent(new CustomEvent('fromscratch:modestart'));
     if (booleanState.active) endBooleanMode();
 
     const container = document.getElementById('canvas-container');
@@ -119,6 +120,7 @@ export function startBooleanMode(bodyIdA, operation) {
 
 export function endBooleanMode() {
     if (!booleanState.active) return;
+    window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
 
     if (booleanState.cleanup) booleanState.cleanup();
 

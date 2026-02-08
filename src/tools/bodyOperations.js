@@ -6,7 +6,7 @@
 import { getBodyById, updateBody, removeBody, clearBodySelection, getBodySelection, clearBodyMultiSelection } from '../core/state.js';
 import { getShape, removeShape, storeShape } from '../core/occtShapeStore.js';
 import { pushUndoSnapshot } from '../core/undoRedo.js';
-import { filletEdges, chamferEdges, getEdgeByIndex, getFaceByIndex, extrudeFaceAndFuse, extrudeFaceAndCut, booleanCut, booleanFuse, translateShape, getEdgeEndpoints, getVertexPosition, rebuildShapeWithMovedVertices } from '../core/occtEngine.js';
+import { filletEdges, chamferEdges, getEdgeByIndex, getFaceByIndex, extrudeFaceAndFuse, extrudeFaceAndCut, booleanCut, booleanFuse, translateShape, getEdgeEndpoints, getVertexPosition, rebuildShapeWithMovedVertices, getFaceVertexPositions } from '../core/occtEngine.js';
 import { tessellateShape } from '../core/occtTessellate.js';
 import { replaceBodyMesh, removeBodyMesh, getBodyGroup } from '../render/bodyRender.js';
 import { updateSelectionHighlight, updateMultiSelectionHighlight } from '../render/selectionHighlight.js';
@@ -277,6 +277,8 @@ export function applyBoolean(bodyIdA, bodyIdB, operation) {
  * @param {{x: number, y: number, z: number}} delta - Movement delta
  */
 export function applyTranslateSubElement(bodyId, elementType, elementData, delta) {
+    console.log(`applyTranslateSubElement: bodyId=${bodyId}, type=${elementType}, edgeIndex=${elementData?.edgeIndex}, vertexIndex=${elementData?.vertexIndex}, delta=(${delta?.x?.toFixed(3)},${delta?.y?.toFixed(3)},${delta?.z?.toFixed(3)})`);
+
     const body = getBodyById(bodyId);
     if (!body || !body.occtShapeRef) {
         console.warn('Cannot translate sub-element: body has no OCCT shape');
@@ -339,7 +341,9 @@ export function applyTranslateSubElement(bodyId, elementType, elementData, delta
             return;
         }
 
+        console.log(`applyTranslateSubElement: rebuilding with ${vertexMoves.length} vertex moves:`, vertexMoves.map(m => `(${m.from.x.toFixed(3)},${m.from.y.toFixed(3)},${m.from.z.toFixed(3)}) -> (${m.to.x.toFixed(3)},${m.to.y.toFixed(3)},${m.to.z.toFixed(3)})`));
         const newShape = rebuildShapeWithMovedVertices(shape, vertexMoves);
+        console.log('applyTranslateSubElement: OCCT rebuild succeeded, tessellating...');
         const tessellation = tessellateShape(newShape);
 
         const oldShapeRef = body.occtShapeRef;
@@ -362,7 +366,7 @@ export function applyTranslateSubElement(bodyId, elementType, elementData, delta
 
         console.log(`Sub-element translated: ${elementType} on ${bodyId}`);
     } catch (e) {
-        console.error('Sub-element translation failed:', e.message || e);
+        console.error('Sub-element translation FAILED:', e.message || e, e.stack || '');
     }
 }
 
@@ -413,5 +417,65 @@ export function applyMoveBody(bodyId, dx, dy, dz) {
         console.log(`Body moved: ${bodyId} by (${dx}, ${dy}, ${dz})`);
     } catch (e) {
         console.error('Move body failed:', e.message || e);
+    }
+}
+
+/**
+ * Translate all vertices of a face by a delta vector via OCCT shape rebuild.
+ * @param {string} bodyId - Body to modify
+ * @param {number} faceIndex - Face index from topology
+ * @param {{x: number, y: number, z: number}} delta - Movement delta
+ */
+export function applyTranslateFace(bodyId, faceIndex, delta) {
+    const body = getBodyById(bodyId);
+    if (!body || !body.occtShapeRef) {
+        console.warn('Cannot translate face: body has no OCCT shape');
+        return;
+    }
+
+    const shape = getShape(body.occtShapeRef);
+    if (!shape) {
+        console.warn('Cannot translate face: OCCT shape not found');
+        return;
+    }
+
+    const faceVerts = getFaceVertexPositions(shape, faceIndex);
+    if (!faceVerts || faceVerts.length === 0) {
+        console.warn('Cannot translate face: no vertices found');
+        return;
+    }
+
+    pushUndoSnapshot();
+
+    try {
+        const vertexMoves = faceVerts.map(v => ({
+            from: v,
+            to: { x: v.x + delta.x, y: v.y + delta.y, z: v.z + delta.z }
+        }));
+
+        const newShape = rebuildShapeWithMovedVertices(shape, vertexMoves);
+        const tessellation = tessellateShape(newShape);
+
+        const oldShapeRef = body.occtShapeRef;
+        const newShapeRef = storeShape(newShape);
+
+        updateBody(bodyId, {
+            occtShapeRef: newShapeRef,
+            tessellation
+        });
+
+        removeShape(oldShapeRef);
+
+        const updatedBody = getBodyById(bodyId);
+        replaceBodyMesh(bodyId, tessellation, updatedBody);
+
+        clearBodySelection();
+        clearBodyMultiSelection();
+        updateSelectionHighlight(getBodySelection(), getBodyGroup());
+        updateMultiSelectionHighlight([]);
+
+        console.log(`Face translated: face ${faceIndex} on ${bodyId}`);
+    } catch (e) {
+        console.error('Face translation failed:', e.message || e);
     }
 }

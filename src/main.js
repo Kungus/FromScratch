@@ -3,10 +3,11 @@
  * Bootstraps the application.
  */
 
+import * as THREE from 'three';
 import { initScene, render } from './render/sceneSetup.js';
 import { initCamera, getCamera } from './input/camera.js';
 import { initGrid } from './render/gridRender.js';
-import { getState, setGridSize, setSnapSize, setActiveTool, subscribe, addBody, removeBody, getBodyById, updateBody, getBodySelection, getBodyHover, getBodyMultiSelection, getActiveSketchPlane, clearBodySelection, setShapeRemovalFn, addSketch, removeSketch, updateSketch, getSketches, getBodies } from './core/state.js';
+import { getState, setGridSize, setSnapSize, setActiveTool, subscribe, addBody, removeBody, getBodyById, updateBody, getBodySelection, setBodySelection, getBodyHover, getBodyMultiSelection, getActiveSketchPlane, clearBodySelection, setShapeRemovalFn, addSketch, removeSketch, updateSketch, getSketches, getBodies } from './core/state.js';
 import { removeShape } from './core/occtShapeStore.js';
 import { initUndoRedo, pushUndoSnapshot, undo, redo } from './core/undoRedo.js';
 import { initViewCube, updateViewCube, showViewLabel } from './ui/viewCube.js';
@@ -75,14 +76,17 @@ import { snap } from './core/snap.js';
 import { detectSubElement } from './core/bodyHitTest.js';
 
 // Extracted modules
-import { applyFillet, applyChamfer, applyFaceExtrusion, applyBoolean, applyMoveBody, applyTranslateSubElement } from './tools/bodyOperations.js';
+import { applyFillet, applyChamfer, applyFaceExtrusion, applyBoolean, applyMoveBody, applyTranslateSubElement, applyTranslateFace } from './tools/bodyOperations.js';
 import { initFaceExtrudeMode, startFaceExtrudeMode, endFaceExtrudeMode, isFaceExtrudeModeActive } from './tools/faceExtrudeMode.js';
 import { initFilletMode, startFilletMode, endFilletMode, isFilletModeActive } from './tools/filletMode.js';
 import { initChamferMode, startChamferMode, endChamferMode, isChamferModeActive } from './tools/chamferMode.js';
 import { initBooleanMode, startBooleanMode, endBooleanMode, isBooleanModeActive } from './tools/booleanMode.js';
-import { initMoveBodyMode, startMoveBodyMode, endMoveBodyMode, isMoveBodyModeActive } from './tools/moveBodyMode.js';
-import { initTranslateSubElementMode, startTranslateSubElementMode, endTranslateSubElementMode, isTranslateSubElementModeActive } from './tools/translateSubElementMode.js';
+import { initMoveBodyMode, endMoveBodyMode, isMoveBodyModeActive } from './tools/moveBodyMode.js';
+import { initTranslateSubElementMode, endTranslateSubElementMode, isTranslateSubElementModeActive } from './tools/translateSubElementMode.js';
 import { initContextMenuBuilder, buildContextMenuItems } from './ui/contextMenuBuilder.js';
+import { initContextWidget, hideWidget } from './ui/contextWidget.js';
+import { initGizmo, showGizmo, hideGizmo, updateGizmoScale, getGizmoHitMeshes, highlightGizmoAxis, isGizmoVisible } from './render/gizmoRender.js';
+import { initGizmoMode, startGizmoMode, endGizmoMode, isGizmoModeActive } from './tools/gizmoMode.js';
 
 let isRunning = false;
 
@@ -104,7 +108,8 @@ export function init(container, viewCubeContainer) {
     initBooleanMode({ applyBoolean });
     initMoveBodyMode({ applyMoveBody });
     initTranslateSubElementMode({ applyTranslateSubElement });
-    initContextMenuBuilder({ startFaceExtrudeMode, startFilletMode, startChamferMode, startBooleanMode, startMoveBodyMode, startTranslateSubElementMode });
+    initGizmoMode({ applyMoveBody, applyTranslateSubElement, applyTranslateFace, applyFaceExtrusion });
+    initContextMenuBuilder({ startFaceExtrudeMode, startFilletMode, startChamferMode, startBooleanMode, showMoveGizmo });
 
     // Initialize undo/redo system
     initUndoRedo({
@@ -116,7 +121,9 @@ export function init(container, viewCubeContainer) {
             if (isBooleanModeActive()) endBooleanMode();
             if (isMoveBodyModeActive()) endMoveBodyMode();
             if (isTranslateSubElementModeActive()) endTranslateSubElementMode();
+            if (isGizmoModeActive()) endGizmoMode();
             if (isInSketchOnFaceMode()) exitSketchOnFace();
+            hideGizmo();
 
             // Rebuild all body meshes from state
             const bodyGrp = getBodyGroup();
@@ -142,6 +149,7 @@ export function init(container, viewCubeContainer) {
 
             hideDimensions();
             hideInput();
+            hideWidget();
         }
     });
 
@@ -179,6 +187,9 @@ export function init(container, viewCubeContainer) {
     // Initialize selection highlight
     initSelectionHighlight(scene);
 
+    // Initialize translation gizmo
+    initGizmo(scene);
+
     // Initialize face grid (for sketch-on-face mode)
     initFaceGrid(scene);
 
@@ -188,6 +199,9 @@ export function init(container, viewCubeContainer) {
 
     // Initialize dimension input (type-to-specify)
     initDimensionInput(appContainer);
+
+    // Initialize context widget (floating action panel near selected elements)
+    initContextWidget(appContainer, { startFaceExtrudeMode, startFilletMode, startChamferMode, startBooleanMode, showMoveGizmo });
 
     // Setup rectangle tool callbacks
     setPreviewCallback((rect) => {
@@ -508,6 +522,91 @@ export function init(container, viewCubeContainer) {
         }
     });
 
+    // === Gizmo: hide when any interactive mode starts or selection clears ===
+    window.addEventListener('fromscratch:modestart', () => {
+        hideGizmo();
+        // Clear selection highlight so it doesn't mask the OCCT preview during drag modes
+        updateHoverHighlight(null, getBodyGroup());
+        updateSelectionHighlight(null, getBodyGroup());
+        updateMultiSelectionHighlight([]);
+    });
+    const _gizmoRaycaster = new THREE.Raycaster();
+    subscribe((state, changedPath) => {
+        if (changedPath !== 'interaction.bodySelection') return;
+        const sel = state.interaction.bodySelection;
+        // Hide gizmo when selection clears (gizmo is shown explicitly via context menu)
+        if (!sel || !sel.type) {
+            hideGizmo();
+        }
+    });
+
+    // Escape hides gizmo when visible but no drag mode is active
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && isGizmoVisible() && !isGizmoModeActive()) {
+            hideGizmo();
+        }
+    });
+
+    // Gizmo: hover highlight on mousemove
+    container.addEventListener('mousemove', (e) => {
+        if (!isGizmoVisible() || isGizmoModeActive()) return;
+        const hitMeshes = getGizmoHitMeshes();
+        if (hitMeshes.length === 0) return;
+
+        const rect = container.getBoundingClientRect();
+        const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        _gizmoRaycaster.setFromCamera({ x: ndcX, y: ndcY }, getCamera());
+
+        const hits = _gizmoRaycaster.intersectObjects(hitMeshes);
+        if (hits.length > 0) {
+            const axis = hits[0].object.userData.axis;
+            highlightGizmoAxis(axis);
+            container.style.cursor = 'pointer';
+        } else {
+            highlightGizmoAxis(null);
+            // Only reset cursor if no mode is active
+            if (!isGizmoModeActive()) {
+                container.style.cursor = '';
+            }
+        }
+    });
+
+    // Gizmo: capture-phase mousedown to intercept clicks on gizmo arrows
+    container.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (!isGizmoVisible() || isGizmoModeActive()) return;
+
+        const hitMeshes = getGizmoHitMeshes();
+        if (hitMeshes.length === 0) return;
+
+        const rect = container.getBoundingClientRect();
+        const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        _gizmoRaycaster.setFromCamera({ x: ndcX, y: ndcY }, getCamera());
+
+        const hits = _gizmoRaycaster.intersectObjects(hitMeshes);
+        if (hits.length === 0) return;
+
+        const axis = hits[0].object.userData.axis;
+        const sel = getBodySelection();
+        if (!sel || !sel.type || !sel.bodyId) return;
+
+        e.stopImmediatePropagation();
+        e.preventDefault();
+
+        const center = computeSelectionCenter(sel);
+        if (!center) return;
+
+        startGizmoMode(axis, {
+            type: sel.type,
+            bodyId: sel.bodyId,
+            subElementIndex: sel.subElementIndex,
+            subElementData: sel.subElementData,
+            worldCenter: center
+        });
+    }, true); // capture phase
+
     // Update snap indicator on pointer move
     onPointer('move', (state) => {
         const plane = getActiveSketchPlane();
@@ -557,6 +656,56 @@ export function init(container, viewCubeContainer) {
 }
 
 /**
+ * Show the translation gizmo for a specific element (called from context menu).
+ * Sets the body selection so that gizmo handle clicks know what to operate on.
+ */
+function showMoveGizmo(bodyId, type, subElementIndex, subElementData) {
+    // Ensure body selection matches the element we want to move
+    setBodySelection(type, bodyId, subElementIndex, subElementData);
+    const sel = getBodySelection();
+    const center = computeSelectionCenter(sel);
+    if (center) {
+        showGizmo(center);
+    }
+}
+
+/**
+ * Compute the world-space center of the current body selection.
+ * Reuses the same centroid logic as contextWidget.js.
+ */
+function computeSelectionCenter(selection) {
+    if (!selection || !selection.type) return null;
+
+    if (selection.type === 'face' && selection.subElementData?.allVertices) {
+        const verts = selection.subElementData.allVertices;
+        let cx = 0, cy = 0, cz = 0;
+        for (const v of verts) { cx += v.x; cy += v.y; cz += v.z; }
+        return new THREE.Vector3(cx / verts.length, cy / verts.length, cz / verts.length);
+    } else if (selection.type === 'edge' && selection.subElementData) {
+        const sv = selection.subElementData.startVertex;
+        const ev = selection.subElementData.endVertex;
+        if (sv && ev) {
+            return new THREE.Vector3((sv.x + ev.x) / 2, (sv.y + ev.y) / 2, (sv.z + ev.z) / 2);
+        }
+    } else if (selection.type === 'vertex' && selection.subElementData?.position) {
+        const p = selection.subElementData.position;
+        return new THREE.Vector3(p.x, p.y, p.z);
+    } else if (selection.type === 'body' && selection.bodyId) {
+        const body = getBodyById(selection.bodyId);
+        if (body?.tessellation?.positions) {
+            const pos = body.tessellation.positions;
+            let cx = 0, cy = 0, cz = 0;
+            const count = pos.length / 3;
+            for (let i = 0; i < count; i++) {
+                cx += pos[i * 3]; cy += pos[i * 3 + 1]; cz += pos[i * 3 + 2];
+            }
+            return new THREE.Vector3(cx / count, cy / count, cz / count);
+        }
+    }
+    return null;
+}
+
+/**
  * Animation loop
  */
 function animate() {
@@ -567,6 +716,9 @@ function animate() {
 
     // Update view cube to match camera orientation
     updateViewCube();
+
+    // Keep gizmo at constant screen size
+    updateGizmoScale();
 }
 
 /**

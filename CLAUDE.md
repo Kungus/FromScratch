@@ -35,7 +35,8 @@ fromscratch/
 │   │   ├── sketchRender.js # Rectangles, circles, selection
 │   │   ├── bodyRender.js   # 3D bodies (extruded shapes)
 │   │   ├── selectionHighlight.js # Face/edge/vertex highlights
-│   │   └── dimensionRender.js # Live dimension display
+│   │   ├── dimensionRender.js # Live dimension display
+│   │   └── gizmoRender.js  # 3D translation gizmo (colored axis arrows)
 │   ├── tools/
 │   │   ├── selectTool.js   # Select sketches (2D)
 │   │   ├── bodySelectTool.js # Select bodies/faces/edges/vertices
@@ -47,12 +48,14 @@ fromscratch/
 │   │   ├── filletMode.js   # Interactive drag-to-radius fillet
 │   │   ├── booleanMode.js  # Interactive pick-body for subtract/union
 │   │   ├── translateSubElementMode.js # Interactive edge/vertex translation
+│   │   ├── gizmoMode.js    # Interactive drag-on-axis translation gizmo
 │   │   └── sketchOnFaceTool.js # Sketch-on-face mode controller
 │   └── ui/
 │       ├── viewCube.js     # 3D orientation cube
 │       ├── dimensionInput.js # Type-to-specify dialog
 │       ├── contextMenu.js  # Generic right-click menu renderer
-│       └── contextMenuBuilder.js # Context menu item construction
+│       ├── contextMenuBuilder.js # Context menu item construction
+│       └── contextWidget.js # Floating action panel near selected elements
 ```
 
 ## The Golden Rules
@@ -80,6 +83,7 @@ fromscratch/
 - [x] POC 5: Fillet — interactive drag-to-radius with live OCCT preview
 - [x] POC 6: Booleans — subtract, union via right-click context menu
 - [x] Undo/Redo — Snapshot-based undo/redo with OCCT shape reference counting
+- [x] Translation Gizmo — axis-constrained move for bodies, faces, edges, vertices
 - [ ] POC 7: Full Loop — complete workflow
 
 ## Keyboard Shortcuts
@@ -391,6 +395,47 @@ User Input → Tool → State → Render
 - Debounced preview (100ms) rebuilds entire shape via OCCT for accurate preview
 - Follows established interactive mode pattern (init/start/end/isActive, capture-phase events, status banner)
 
+### 2026-02-08: Translation Gizmo + Context Widget
+**New modules:**
+- `src/render/gizmoRender.js` — 3D translation gizmo (colored axis arrows X=red, Y=green, Z=blue) with invisible hit-test meshes, camera-distance scaling, hover highlight
+- `src/tools/gizmoMode.js` — Interactive drag-on-axis state machine for body/face/edge/vertex translation
+- `src/ui/contextWidget.js` — Floating action panel near selected sub-elements (Extrude Face, Fillet Edge, Move Edge, etc.)
+
+**Modified modules:**
+- `src/core/occtEngine.js` — Major rewrite of `rebuildShapeWithMovedVertices()`: preserves original faces/edges when their vertices aren't moved, replaced unavailable `BRepBuilderAPI_Sewing` with `BRep_Builder` + `TopoDS_Shell`, added `getFaceVertexPositions()`
+- `src/tools/bodyOperations.js` — Added `applyTranslateFace()` for face vertex translation, diagnostic logging
+- `src/ui/contextMenuBuilder.js` — Uses `showMoveGizmo` instead of old mode starters
+- `src/main.js` — Wires gizmo render/mode, context widget, mode coordination via `fromscratch:modestart`/`modeend` events
+- `src/tools/faceExtrudeMode.js`, `filletMode.js`, `chamferMode.js`, `booleanMode.js`, `moveBodyMode.js`, `translateSubElementMode.js` — Dispatch `fromscratch:modestart`/`modeend` events for mode coordination
+- `src/tools/bodySelectTool.js` — Dispatch `fromscratch:bodyselected` event for context widget
+- `index.html` — Context widget CSS styles
+
+**What works:**
+- Click body/face/edge/vertex → context widget appears with relevant actions (Extrude Face, Fillet Edge, Move Edge, etc.)
+- Click "Move Edge/Vertex/Body" in widget → gizmo appears with 3 colored axis arrows
+- Hover arrow → brightens, cursor changes to pointer
+- Click-drag arrow → axis-constrained translation with live preview (debounced OCCT rebuild for edges/vertices/faces)
+- D key during drag → dimension input for exact value
+- Escape → cancel, no changes
+- Face normal-aligned drag → delegates to face extrusion (push/pull)
+- Gizmo auto-scales with camera distance for constant screen size
+- All gizmo operations are undoable (Ctrl+Z)
+- Gizmo hides when other modes start (fillet, boolean, etc.)
+
+**Key design:**
+- Context-menu-driven: gizmo appears via widget button click, not automatically on selection
+- Gizmo uses invisible fatter cylinders for hit-testing (easier to click than visual arrows)
+- `renderOrder: 1100` (above selection highlights at 1000) with `depthTest: false`
+- Camera-distance scaling formula: `scale = camera.position.distanceTo(gizmoPos) * 0.08`
+- `fromscratch:modestart`/`modeend` events coordinate gizmo, widget, and highlights
+
+**Bugs fixed:**
+- `rebuildShapeWithMovedVertices` double-delete of TopoDS_Edge (curved-edge check deleted edge, then catch block deleted again)
+- `rebuildShapeWithMovedVertices` rejected entire shapes with ANY curved edges — now preserves unmoved faces/edges
+- `BRepBuilderAPI_Sewing` not available in OCCT.js WASM build — replaced with `BRep_Builder` + `TopoDS_Shell`
+- Wire leak on MakeFace exception — fixed with `finally` block
+- Selection highlights masking OCCT preview during drag — cleared on `fromscratch:modestart`
+
 ## Next Steps
 1. **POC 7: Full Loop** — complete workflow (all POCs integrated)
 2. **Push/Pull** — Drag faces to modify body dimensions (face extrude mode is the foundation)
@@ -410,6 +455,6 @@ Sketch → occtEngine.makeBox/makeCylinder → TopoDS_Shape → occtTessellate �
 ## Known Issues / Polish Later
 - Cylinder "side" face is one big curved surface (might want segment selection?)
 - Could add multi-select (Shift+click to add to selection)
-- Body movement/transformation not yet implemented
 - OCCT edges render as `THREE.Line`, primitives as `THREE.LineSegments` — any code traversing body meshes must check for both
 - `state.subscribe` logs ALL state changes (including hover) — very noisy in console, consider filtering
+- `rebuildShapeWithMovedVertices` only works for planar faces with straight edges — curved faces preserved but not rebuilt

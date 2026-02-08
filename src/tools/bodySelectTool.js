@@ -23,8 +23,18 @@ const toolState = {
     dragStartX: 0,
     dragStartY: 0,
     lastClickTime: 0,
-    lastClickBodyId: null
+    lastClickBodyId: null,
+    modeSuppressed: false
 };
+
+// Suppress hover/click while an interactive mode is active
+window.addEventListener('fromscratch:modestart', () => {
+    toolState.modeSuppressed = true;
+    clearBodyHover();
+});
+window.addEventListener('fromscratch:modeend', () => {
+    toolState.modeSuppressed = false;
+});
 
 // Double-click timing (ms) — 500ms matches typical OS default
 const DOUBLE_CLICK_THRESHOLD = 500;
@@ -93,7 +103,7 @@ export function setBodySelectCallbacks(callbacks) {
 // =============================================================================
 
 function handlePointerDown(state) {
-    if (!toolState.isActive) return;
+    if (!toolState.isActive || toolState.modeSuppressed) return;
 
     const currentSelection = getBodySelection();
     const bodyHit = state.bodyHit;
@@ -189,7 +199,7 @@ function handlePointerDown(state) {
 }
 
 function handlePointerMove(state) {
-    if (!toolState.isActive) return;
+    if (!toolState.isActive || toolState.modeSuppressed) return;
 
     // Don't update hover while dragging
     if (toolState.isDragging) return;

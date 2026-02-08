@@ -109,3 +109,139 @@ POC 4 Phase E passes full architectural review.
 6. **CAUTION:** OCCT memory management works but watch for leaks on long sessions
 
 See detailed review: `REVIEW_REFACTOR_2026-02-07.md`
+
+## 2026-02-08: Context Widget System — IMPLEMENTATION COMPLETE & VERIFIED
+
+**Status: PASS — No architectural violations**
+
+**Implementation delivered:**
+- `src/ui/contextWidget.js` (NEW) — Floating action panel near selected sub-elements
+- `index.html` — CSS styles for widget components
+- `src/main.js` — Added initialization + hideWidget in onRestore callback
+- **6 mode files** — Added `fromscratch:modestart` event dispatch at mode start
+
+**Architecture verified:**
+
+1. **Layer Boundaries:** COMPLIANT
+   - contextWidget imports: state, input/camera, render, core/undoRedo, tools/sketchOnFaceTool
+   - All imports legal (no upward/cross-layer violations)
+   - UI layer correctly imports from view, state, input, tool layers
+
+2. **State Management:** COMPLIANT
+   - Subscribes to `state.interaction.bodySelection` changes
+   - Widget rebuilds from state, no local cache
+   - Delete action goes through proper state channel (removeBody)
+
+3. **One Module = One Thing:** COMPLIANT
+   - Single responsibility: "Display context-sensitive actions near selected sub-elements"
+   - Does NOT execute actions, only triggers injected callbacks (DI pattern)
+
+4. **Event Pattern:** NEW PATTERN ESTABLISHED
+   - `fromscratch:modestart` event dispatched at start of every interactive mode
+   - Widget listens and hides when any mode begins
+   - Follows existing `fromscratch:settool` event convention
+   - Decouples widget from mode implementation details
+
+5. **Dependency Injection:** CONSISTENT WITH PROJECT
+   - initContextWidget receives mode-starting callbacks
+   - Same pattern as contextMenuBuilder
+   - Avoids circular imports
+
+6. **Performance:** ACCEPTABLE
+   - Subscription fires once per selection change (user click)
+   - Screen positioning calculation is negligible (~5 vector ops)
+   - No geometry calculations
+
+**Integration points verified:**
+- State subscription → widget rebuild ✓
+- Mode start → widget hide (event-driven) ✓
+- Tool switch → widget hide (event-driven) ✓
+- Undo/redo → widget hide (callback in onRestore) ✓
+- Multi-select → widget labels update ("Fillet 3") ✓
+
+**Risks identified & mitigated:**
+- Widget updates during mode (safe — widget hidden during modes)
+- Missing event dispatch in new mode (pattern established; code review catches)
+- Stale mode callbacks (DI pattern decouples; signatures stable)
+- Performance overhead (negligible — single vector math per selection)
+
+**New UI→Tools delegation pattern established:**
+```
+contextWidget (UI) → DI callbacks → interactive modes (Tools)
+```
+Reusable pattern for future UI panels (toolbar, side panel, etc.)
+
+See detailed review: `REVIEW_CONTEXT_WIDGET_2026-02-08.md`
+
+## 2026-02-08: Gizmo Mode System — FULL IMPLEMENTATION REVIEW
+
+**Status: PASS with DOCUMENTED EXCEPTION**
+
+**Files Added:**
+- `src/tools/gizmoMode.js` (NEW, 436 lines) — Interactive drag-on-axis state machine
+- `src/render/gizmoRender.js` (NEW, 182 lines) — 3-axis translation gizmo visual
+- `src/core/occtEngine.js` (modified) — Added `getFaceVertexPositions()` pure function
+- `src/tools/bodyOperations.js` (modified) — Added `applyTranslateFace()` operation
+- `src/main.js` (modified) — Gizmo initialization, wiring, event handling
+
+**Architecture Verified:**
+
+1. **Layer Boundaries:** PASS
+   - gizmoMode.js (tools/): imports core→input→render (legal)
+   - gizmoRender.js (render/): imports only THREE.js + input/camera (pure)
+   - EXCEPTION (intentional): bodyOperations.js imports render for atomic state→mesh→selection sync
+   - Exception documented and justified; see REVIEW_GIZMO_2026-02-08.md
+
+2. **Pure Functions:** PASS
+   - getFaceVertexPositions(shape, faceIndex) returns plain object array
+   - No THREE.js, DOM, state mutations in core/occtEngine additions
+
+3. **Single Responsibility:** PASS
+   - gizmoRender: "Render 3-axis gizmo" (visual only)
+   - gizmoMode: "Interactive drag-on-axis state machine" (input→preview→commit)
+   - applyTranslateFace: "Translate face vertices" (operation in bodyOperations)
+
+4. **Tool Pattern:** EXCELLENT
+   - initGizmoMode(callbacks) / startGizmoMode / endGizmoMode / isGizmoModeActive
+   - DI callbacks injected at init (lines 49-54)
+   - Event subscription/cleanup via mode.cleanup function (lines 334-339)
+   - Capture-phase mousedown prevents tool conflicts (line 330)
+   - No state.js writes — results via DI callbacks only
+
+5. **OCCT Boundaries:** PASS
+   - Only core/occtEngine exposes OCCT functions
+   - gizmoMode calls pure functions: getEdgeEndpoints, getVertexPosition, getFaceVertexPositions, rebuildShapeWithMovedVertices
+   - All data passed is plain objects (no OCCT objects leak to tools)
+
+6. **State Management:** PASS
+   - gizmoMode is entirely self-contained (mode object, lines 23-38)
+   - No intermediate state written to state.js
+   - Results committed via bodyOperations which handles atomic state→render→selection sync
+
+7. **Integration:** COMPLETE
+   - initGizmo(scene) at main.js:191 (correct order)
+   - initGizmoMode DI at main.js:111
+   - Undo cleanup at main.js:124
+   - Hide on modestart (line 526)
+   - Show on selection change (lines 530-543)
+   - Hover highlight (lines 546-568)
+   - Mousedown intercept (lines 571-603)
+   - Scale update per frame (line 702)
+
+**Mathematical Quality:** Excellent
+- Screen-space projection (lines 59-71): normalizes correctly
+- Axis drag via dot product (lines 213-227): sound
+- Grid snap: projects to scalar, snaps, converts back (lines 223-226)
+- Face extrusion: accounts for normal sign (lines 248-252)
+
+**Key Design Decisions:**
+- Geometry offsets baked into BufferGeometry via .translate() (gizmoRender.js:72,78,90) before rotation — avoids parent-space issues
+- Cheap preview for body move (mesh position), expensive preview for sub-elements (OCCT rebuild, debounced 100ms)
+- Face normal alignment check: if dot(normal, axis) > 0.9, delegate to applyFaceExtrusion; else call applyTranslateFace
+
+**Known Limitations (intentional):**
+- Only works on planar faces with straight edges (rebuildShapeWithMovedVertices checks GeomAbs_Line, line 630)
+- Curved edges (fillet/chamfer) explicitly rejected (line 634)
+- Detects and rejects; provides clear error message
+
+See detailed review: `REVIEW_GIZMO_2026-02-08.md`

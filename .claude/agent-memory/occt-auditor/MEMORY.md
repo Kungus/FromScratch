@@ -97,7 +97,55 @@ faces.forEach(f => f.delete());  // Cleanup
 
 ---
 
+### Exception-Path Wire Leak (HIGH RISK) — NEW 2026-02-08
+**Pattern:** Wire wrappers created before try-catch blocks leak when exceptions occur.
+
+**Leak found in `rebuildShapeWithMovedVertices()` lines 737-752:**
+```javascript
+const newWire = newWireBuilder.Wire();
+try {
+    const faceMaker = new oc.BRepBuilderAPI_MakeFace_15(newWire, true);
+    // ... use faceMaker ...
+} catch (e) {
+    console.warn('Face rebuild failed:', e.message || e);
+    // ❌ newWire leaked — .delete() at line 752 not reached
+}
+newWire.delete();  // Only reached if no exception
+```
+
+**Why it leaks:** Exception in try block jumps to catch, skipping the cleanup at line 752.
+
+**Safe pattern:**
+```javascript
+const newWire = newWireBuilder.Wire();
+try {
+    const faceMaker = new oc.BRepBuilderAPI_MakeFace_15(newWire, true);
+    // ... use faceMaker ...
+} catch (e) {
+    console.warn('Face rebuild failed:', e.message || e);
+} finally {
+    newWire.delete();  // ✓ ALWAYS cleanup
+}
+```
+
+**Applies to:** Any OCCT object created before a try block that's deleted after. Use try-finally pattern or delete in both catch and normal paths.
+
+---
+
 ## Good Patterns Observed
+
+### Preview Shape Cleanup (NEW - 2026-02-08 Gizmo Audit)
+**GOLD STANDARD for preview operations:**
+```javascript
+const newShape = rebuildShapeWithMovedVertices(shape, vertexMoves);
+const tessellation = tessellateShape(newShape);
+newShape.delete();  // ✅ Critical: preview shape must be deleted
+```
+**Why it's good:** Preview shapes are temporary. Tessellation extracts plain JS data, so OCCT shape can be freed immediately. **Prevents leak on every preview update** (e.g., mouse move debounce).
+
+**Found in:** `gizmoMode.js` tryRebuildPreview() line 122 — correctly deletes preview after tessellation.
+
+**Applies to:** All interactive preview modes (fillet, face extrude, gizmo, future features).
 
 ### Try-Finally for Conditional Cleanup
 `occtTessellate.js` lines 161-180:
@@ -154,6 +202,56 @@ export function translateShape(shape, dx, dy, dz) {
 ```
 **Why it's exemplary:** All three intermediate OCCT objects (gp_Vec, gp_Trsf, builder) properly cleaned up. No inline construction. Clear variable names. Reference this pattern.
 
+### Gizmo Mode Files — LEAK-FREE (Audit 2026-02-08)
+**Audited files:** `gizmoMode.js`, `bodyOperations.js` (applyTranslateFace), `occtEngine.js` (getFaceVertexPositions)
+
+**Status:** ✅ **ZERO memory leaks found.** All OCCT objects properly cleaned up.
+
+**Key findings:**
+- `gizmoMode.js` tryRebuildPreview() line 123: correctly deletes preview shape immediately after tessellation
+- `bodyOperations.js` applyTranslateFace() lines 425-477: follows established pattern, proper cleanup
+- `occtEngine.js` getFaceVertexPositions() lines 814-849: explorer + downcasts all deleted
+- All functions use try-finally or explicit cleanup sections
+- No inline builder leaks, no geometry object leaks, no explorer leaks
+
+**These files are GOLD STANDARD for future reference.**
+
+---
+
+### rebuildShapeWithMovedVertices Audit (2026-02-08)
+**Audited:** `occtEngine.js` lines 598-819
+
+**Status:** ⚠️ **1 CRITICAL LEAK, 1 WARNING**
+
+**Critical Issue:**
+- **Line 739-752: `newWire` leaked on exception** — Wire wrapper created before try block, deleted after. If `BRepBuilderAPI_MakeFace_15` throws, cleanup skipped. FIX: Use finally block.
+
+**Warning:**
+- **Line 789: Shell wrapper deleted immediately after `solidMaker.Shape()`** — Likely safe (builders copy geometry), but if solid results become corrupted, investigate this.
+
+**Good Patterns Found:**
+- Intermediates tracking array (line 632, 685, 815) — builders tracked and batch-cleaned
+- Try-catch wrappers on cleanup (`try { f.delete(); } catch (_) {}`) — prevents double-delete errors
+- Proper sewing ownership understanding — face wrappers deleted after sewing, not before
+- Early exit with cleanup (line 759-762) — cleans intermediates before throwing
+- Correct explorer cleanup throughout — no explorer leaks
+
+**Recommended Fix:**
+```javascript
+// Line 737-753: Add finally block
+if (newWireBuilder.IsDone()) {
+    const newWire = newWireBuilder.Wire();
+    try {
+        const faceMaker = new oc.BRepBuilderAPI_MakeFace_15(newWire, true);
+        // ... existing logic ...
+    } catch (e) {
+        console.warn('Face rebuild failed:', e.message || e);
+    } finally {
+        newWire.delete();  // ✅ ALWAYS cleanup
+    }
+}
+```
+
 ---
 
 ## OCCT API Patterns in This Codebase
@@ -205,7 +303,13 @@ export function translateShape(shape, dx, dy, dz) {
 
 ## Audit Metrics
 
-**Latest audit:** 2026-02-08 (Vertex/Edge Translation feature)
+**Latest audit:** 2026-02-08 (Gizmo Feature)
+**Scope:** `occtEngine.js` (getFaceVertexPositions), `bodyOperations.js` (applyTranslateFace), `gizmoMode.js` (tryRebuildPreview)
+**Issues found in NEW code:** 0 critical, 0 warnings — **CLEAN AUDIT**
+**Issues found in PRE-EXISTING code:** Same 2 critical leaks (inline builders in makeRectangleWire + makeCircleWire)
+**Code quality (new feature):** Excellent. Preview shape cleanup in `tryRebuildPreview()` is **gold standard** — creates OCCT shape, tessellates, immediately deletes. This pattern should be referenced for all future preview features.
+
+**Previous audit:** 2026-02-08 (Vertex/Edge Translation feature)
 **Scope:** `occtEngine.js` (getVertexPositions, getEdgeEndpoints, getVertexPosition, rebuildShapeWithMovedVertices), `bodyOperations.js` (applyTranslateSubElement), `translateSubElementMode.js`
 **Issues found in NEW code:**
   - 0 critical leaks in new functions (excellent!)

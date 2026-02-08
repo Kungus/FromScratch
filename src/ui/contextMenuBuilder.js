@@ -14,19 +14,17 @@ let _startFaceExtrudeMode = null;
 let _startFilletMode = null;
 let _startChamferMode = null;
 let _startBooleanMode = null;
-let _startMoveBodyMode = null;
-let _startTranslateSubElementMode = null;
+let _showMoveGizmo = null;
 
 /**
  * One-time init: inject mode-starting functions to avoid circular imports.
  */
-export function initContextMenuBuilder({ startFaceExtrudeMode, startFilletMode, startChamferMode, startBooleanMode, startMoveBodyMode, startTranslateSubElementMode }) {
+export function initContextMenuBuilder({ startFaceExtrudeMode, startFilletMode, startChamferMode, startBooleanMode, showMoveGizmo }) {
     _startFaceExtrudeMode = startFaceExtrudeMode;
     _startFilletMode = startFilletMode;
     _startChamferMode = startChamferMode;
     _startBooleanMode = startBooleanMode;
-    _startMoveBodyMode = startMoveBodyMode;
-    _startTranslateSubElementMode = startTranslateSubElementMode;
+    _showMoveGizmo = showMoveGizmo;
 }
 
 /**
@@ -102,10 +100,7 @@ export function buildContextMenuItems(target, containerEl) {
             label: 'Move Vertex',
             icon: '\u2726',
             action: () => {
-                _startTranslateSubElementMode(
-                    target.bodyId, 'vertex',
-                    { vertexIndex: target.subElementIndex, position: target.subElementData?.position }
-                );
+                _showMoveGizmo(target.bodyId, 'vertex', target.subElementIndex, target.subElementData);
             }
         });
         items.push({ separator: true });
@@ -171,19 +166,7 @@ export function buildContextMenuItems(target, containerEl) {
             label: 'Move Edge',
             icon: '\u2725',
             action: () => {
-                const edgeIndex = target.subElementData?.edgeIndex;
-                if (edgeIndex == null) {
-                    console.warn('No edge index for move');
-                    return;
-                }
-                _startTranslateSubElementMode(
-                    target.bodyId, 'edge',
-                    {
-                        edgeIndex,
-                        startVertex: target.subElementData?.startVertex,
-                        endVertex: target.subElementData?.endVertex
-                    }
-                );
+                _showMoveGizmo(target.bodyId, 'edge', target.subElementIndex, target.subElementData);
             }
         });
         items.push({ separator: true });
@@ -211,7 +194,9 @@ export function buildContextMenuItems(target, containerEl) {
         items.push({
             label: 'Move',
             icon: '\u2725',
-            action: () => _startMoveBodyMode(target.bodyId)
+            action: () => {
+                _showMoveGizmo(target.bodyId, 'body', null, null);
+            }
         });
         items.push({
             label: 'Delete Body',

@@ -35,6 +35,7 @@ export function initFaceExtrudeMode({ applyFaceExtrusion }) {
  * Start interactive face extrude mode: drag to set height, click to commit.
  */
 export function startFaceExtrudeMode(bodyId, faceIndex, normal, facePositions) {
+    window.dispatchEvent(new CustomEvent('fromscratch:modestart'));
     if (faceExtrudeMode.active) endFaceExtrudeMode();
 
     const camera = getCamera();
@@ -170,6 +171,7 @@ export function startFaceExtrudeMode(bodyId, faceIndex, normal, facePositions) {
 
 export function endFaceExtrudeMode() {
     if (!faceExtrudeMode.active) return;
+    window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
     if (faceExtrudeMode.cleanup) faceExtrudeMode.cleanup();
     faceExtrudeMode.active = false;
     faceExtrudeMode.cleanup = null;

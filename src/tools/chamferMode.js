@@ -73,6 +73,7 @@ function tryChamferPreview(bodyId, edgeIndices, distance) {
  * Start interactive chamfer mode: drag up to increase distance, click to commit.
  */
 export function startChamferMode(bodyId, edgeIndices) {
+    window.dispatchEvent(new CustomEvent('fromscratch:modestart'));
     if (chamferMode.active) endChamferMode();
 
     const container = document.getElementById('canvas-container');
@@ -157,6 +158,7 @@ export function startChamferMode(bodyId, edgeIndices) {
 
 export function endChamferMode() {
     if (!chamferMode.active) return;
+    window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
     if (chamferMode.cleanup) chamferMode.cleanup();
     if (chamferMode.debounceTimer) clearTimeout(chamferMode.debounceTimer);
     chamferMode.active = false;

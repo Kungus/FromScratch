@@ -608,42 +608,18 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
                 return move.to;
             }
         }
-        return { x, y, z };
+        return null; // null = no move needed
     }
 
-    // First pass: verify all edges are linear by checking vertex positions
-    // (avoids complex Curve API — simply check if edge has exactly 2 vertices
-    //  and they form a straight segment, which is true for all non-curved edges)
-    const edgeExplorer = new oc.TopExp_Explorer_2(
-        shape,
-        oc.TopAbs_ShapeEnum.TopAbs_EDGE,
-        oc.TopAbs_ShapeEnum.TopAbs_SHAPE
-    );
-    while (edgeExplorer.More()) {
-        const edge = oc.TopoDS.Edge_1(edgeExplorer.Current());
-        // Use BRepAdaptor_Curve to check curve type
-        let adaptor;
-        try {
-            adaptor = new oc.BRepAdaptor_Curve_2(edge);
-            const curveType = adaptor.GetType();
-            // GeomAbs_Line = 0 in the GeomAbs_CurveType enum
-            if (curveType !== 0) {
-                adaptor.delete();
-                edge.delete();
-                edgeExplorer.delete();
-                throw new Error('Cannot move: shape contains curved edges (from fillet/chamfer)');
-            }
-            adaptor.delete();
-        } catch (e) {
-            if (adaptor) try { adaptor.delete(); } catch (_) {}
-            edge.delete();
-            edgeExplorer.delete();
-            throw e;
-        }
-        edge.delete();
-        edgeExplorer.Next();
+    // Helper: check if a point was moved
+    function wasMoved(x, y, z) {
+        return applyMove(x, y, z) !== null;
     }
-    edgeExplorer.delete();
+
+    // Helper: get moved position or original
+    function getMovedPos(x, y, z) {
+        return applyMove(x, y, z) || { x, y, z };
+    }
 
     // Build new faces
     const newFaces = [];
@@ -658,7 +634,35 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
     while (faceExplorer.More()) {
         const face = oc.TopoDS.Face_1(faceExplorer.Current());
 
-        // Get the outer wire of this face
+        // First check: does this face have any moved vertices?
+        let faceHasMovedVerts = false;
+        const vertChecker = new oc.TopExp_Explorer_2(
+            face,
+            oc.TopAbs_ShapeEnum.TopAbs_VERTEX,
+            oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+        );
+        while (vertChecker.More()) {
+            const v = oc.TopoDS.Vertex_1(vertChecker.Current());
+            const p = oc.BRep_Tool.Pnt(v);
+            if (wasMoved(p.X(), p.Y(), p.Z())) {
+                faceHasMovedVerts = true;
+            }
+            p.delete();
+            v.delete();
+            if (faceHasMovedVerts) break;
+            vertChecker.Next();
+        }
+        vertChecker.delete();
+
+        if (!faceHasMovedVerts) {
+            // No vertices moved on this face — keep original face as-is
+            // (preserves curved/non-planar surfaces like fillets, cylinder sides)
+            newFaces.push(face); // don't delete — it goes into the sewing
+            faceExplorer.Next();
+            continue;
+        }
+
+        // Face has moved vertices — rebuild it with new wire
         const wireExplorer = new oc.TopExp_Explorer_2(
             face,
             oc.TopAbs_ShapeEnum.TopAbs_WIRE,
@@ -687,29 +691,38 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
             const p1 = oc.BRep_Tool.Pnt(firstV);
             const p2 = oc.BRep_Tool.Pnt(lastV);
 
-            const newP1 = applyMove(p1.X(), p1.Y(), p1.Z());
-            const newP2 = applyMove(p2.X(), p2.Y(), p2.Z());
+            const p1x = p1.X(), p1y = p1.Y(), p1z = p1.Z();
+            const p2x = p2.X(), p2y = p2.Y(), p2z = p2.Z();
+            const v1Moved = wasMoved(p1x, p1y, p1z);
+            const v2Moved = wasMoved(p2x, p2y, p2z);
 
-            const gp1 = new oc.gp_Pnt_3(newP1.x, newP1.y, newP1.z);
-            const gp2 = new oc.gp_Pnt_3(newP2.x, newP2.y, newP2.z);
+            if (!v1Moved && !v2Moved) {
+                // Neither vertex moved — keep original edge (preserves curves)
+                newWireBuilder.Add_1(currentEdge);
+            } else {
+                // At least one vertex moved — create new straight edge at moved positions
+                const newP1 = getMovedPos(p1x, p1y, p1z);
+                const newP2 = getMovedPos(p2x, p2y, p2z);
 
-            // Check for degenerate edge
-            const edgeDist = Math.sqrt(
-                (newP2.x - newP1.x) ** 2 +
-                (newP2.y - newP1.y) ** 2 +
-                (newP2.z - newP1.z) ** 2
-            );
+                const edgeDist = Math.sqrt(
+                    (newP2.x - newP1.x) ** 2 +
+                    (newP2.y - newP1.y) ** 2 +
+                    (newP2.z - newP1.z) ** 2
+                );
 
-            if (edgeDist > TOLERANCE) {
-                const edgeBuilder = new oc.BRepBuilderAPI_MakeEdge_3(gp1, gp2);
-                const newEdge = edgeBuilder.Edge();
-                newWireBuilder.Add_1(newEdge);
-                newEdge.delete();
-                edgeBuilder.delete();
+                if (edgeDist > TOLERANCE) {
+                    const gp1 = new oc.gp_Pnt_3(newP1.x, newP1.y, newP1.z);
+                    const gp2 = new oc.gp_Pnt_3(newP2.x, newP2.y, newP2.z);
+                    const edgeBuilder = new oc.BRepBuilderAPI_MakeEdge_3(gp1, gp2);
+                    const newEdge = edgeBuilder.Edge();
+                    newWireBuilder.Add_1(newEdge);
+                    newEdge.delete();
+                    edgeBuilder.delete();
+                    gp1.delete();
+                    gp2.delete();
+                }
             }
 
-            gp1.delete();
-            gp2.delete();
             p1.delete();
             p2.delete();
             firstV.delete();
@@ -735,8 +748,9 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
             } catch (e) {
                 // Non-planar face after vertex move — skip and let validation catch it
                 console.warn('Face rebuild failed:', e.message || e);
+            } finally {
+                newWire.delete();
             }
-            newWire.delete();
         }
 
         faceExplorer.Next();
@@ -748,61 +762,94 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
         throw new Error('Move failed: no valid faces could be rebuilt');
     }
 
-    // Sew faces into a shell
-    const sewing = new oc.BRepBuilderAPI_Sewing_1(TOLERANCE, true, true, true, false);
-    for (const f of newFaces) {
-        sewing.Add(f);
-    }
-    sewing.Perform();
-    const sewedShape = sewing.SewedShape();
-
-    // Try to make a solid from the sewed shell
+    // Build shell from faces using BRep_Builder (more universally available than Sewing)
     let result;
-    try {
-        // Get the shell from the sewed result
-        const shellExplorer = new oc.TopExp_Explorer_2(
-            sewedShape,
-            oc.TopAbs_ShapeEnum.TopAbs_SHELL,
-            oc.TopAbs_ShapeEnum.TopAbs_SHAPE
-        );
+    const builder = new oc.BRep_Builder();
+    const shell = new oc.TopoDS_Shell();
+    builder.MakeShell(shell);
+    for (const f of newFaces) {
+        builder.Add(shell, f);
+    }
 
-        if (shellExplorer.More()) {
-            const shell = oc.TopoDS.Shell_1(shellExplorer.Current());
-            const solidMaker = new oc.BRepBuilderAPI_MakeSolid_2(shell);
-            if (solidMaker.IsDone()) {
-                result = solidMaker.Shape();
-            }
-            solidMaker.delete();
-            shell.delete();
+    // Try to make a solid from the shell
+    try {
+        const solidMaker = new oc.BRepBuilderAPI_MakeSolid_2(shell);
+        if (solidMaker.IsDone()) {
+            result = solidMaker.Shape();
         }
-        shellExplorer.delete();
+        solidMaker.delete();
     } catch (e) {
-        console.warn('Solid creation failed, using sewed shape:', e.message || e);
+        console.warn('Solid creation from shell failed:', e.message || e);
     }
 
     if (!result) {
-        // Fall back to sewed shape (might be a shell, not a solid)
-        result = sewedShape;
+        // Fall back to shell (not a solid, but might still render)
+        result = shell;
     } else {
-        sewedShape.delete();
+        shell.delete();
     }
 
     // Validate
-    const analyzer = new oc.BRepCheck_Analyzer_1(result, true);
-    const isValid = analyzer.IsValid();
-    analyzer.delete();
-
-    if (!isValid) {
-        // Shape isn't valid, but it might still be usable — log warning
-        console.warn('Rebuilt shape validation failed — result may have issues');
+    try {
+        const analyzer = new oc.BRepCheck_Analyzer_1(result, true);
+        const isValid = analyzer.IsValid();
+        analyzer.delete();
+        if (!isValid) {
+            console.warn('Rebuilt shape validation failed — result may have issues');
+        }
+    } catch (e) {
+        console.warn('Shape validation skipped:', e.message || e);
     }
 
     // Cleanup
     newFaces.forEach(f => { try { f.delete(); } catch (_) {} });
     intermediates.forEach(o => { try { o.delete(); } catch (_) {} });
-    sewing.delete();
+    builder.delete();
 
     return result;
+}
+
+/**
+ * Get all vertex positions on a specific face by index.
+ * @param {Object} shape - TopoDS_Shape
+ * @param {number} faceIndex - Face index from topology explorer
+ * @returns {Array<{x: number, y: number, z: number}>|null}
+ */
+export function getFaceVertexPositions(shape, faceIndex) {
+    const oc = getOC();
+    const face = getFaceByIndex(shape, faceIndex);
+    if (!face) return null;
+
+    const vertices = [];
+    const seen = new Set();
+    const TOLERANCE = 1e-5;
+
+    const explorer = new oc.TopExp_Explorer_2(
+        face,
+        oc.TopAbs_ShapeEnum.TopAbs_VERTEX,
+        oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+
+    while (explorer.More()) {
+        const vertex = oc.TopoDS.Vertex_1(explorer.Current());
+        const pnt = oc.BRep_Tool.Pnt(vertex);
+        const x = pnt.X(), y = pnt.Y(), z = pnt.Z();
+
+        // Deduplicate by rounding to tolerance
+        const key = `${Math.round(x / TOLERANCE)},${Math.round(y / TOLERANCE)},${Math.round(z / TOLERANCE)}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            vertices.push({ x, y, z });
+        }
+
+        pnt.delete();
+        vertex.delete();
+        explorer.Next();
+    }
+    explorer.delete();
+    face.delete();
+
+    return vertices;
 }
 
 // =============================================================================

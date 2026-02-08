@@ -63,6 +63,7 @@ function groundRaycast(clientX, clientY, container) {
  * @param {string} bodyId - The body to move
  */
 export function startMoveBodyMode(bodyId) {
+    window.dispatchEvent(new CustomEvent('fromscratch:modestart'));
     if (moveState.active) endMoveBodyMode();
 
     const container = document.getElementById('canvas-container');
@@ -324,6 +325,7 @@ function updateAxisLine() {
 
 export function endMoveBodyMode() {
     if (!moveState.active) return;
+    window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
 
     if (moveState.cleanup) moveState.cleanup();
 

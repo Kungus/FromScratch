@@ -72,6 +72,7 @@ function tryFilletPreview(bodyId, edgeIndices, radius) {
  * Start interactive fillet mode: drag up to increase radius, click to commit.
  */
 export function startFilletMode(bodyId, edgeIndices) {
+    window.dispatchEvent(new CustomEvent('fromscratch:modestart'));
     if (filletMode.active) endFilletMode();
 
     const container = document.getElementById('canvas-container');
@@ -156,6 +157,7 @@ export function startFilletMode(bodyId, edgeIndices) {
 
 export function endFilletMode() {
     if (!filletMode.active) return;
+    window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
     if (filletMode.cleanup) filletMode.cleanup();
     if (filletMode.debounceTimer) clearTimeout(filletMode.debounceTimer);
     filletMode.active = false;

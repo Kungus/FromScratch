@@ -181,6 +181,7 @@ function tryRebuildPreview(bodyId, elementType, elementData, delta) {
  * @param {Object} elementData - From bodyHitTest
  */
 export function startTranslateSubElementMode(bodyId, elementType, elementData) {
+    window.dispatchEvent(new CustomEvent('fromscratch:modestart'));
     if (mode.active) endTranslateSubElementMode();
 
     const container = document.getElementById('canvas-container');
@@ -484,6 +485,7 @@ function updateAxisLine() {
 
 export function endTranslateSubElementMode() {
     if (!mode.active) return;
+    window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
 
     if (mode.cleanup) mode.cleanup();
     if (mode.debounceTimer) clearTimeout(mode.debounceTimer);
