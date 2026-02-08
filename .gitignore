@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# OpenCascade WASM binaries (pulled from npm, ~140MB)
+lib/occt/
+
+# Claude Code local settings (may contain personal config)
+.claude/settings.local.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/

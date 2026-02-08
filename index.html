@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>FromScratch - Precision 3D Modeling</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #ffffff;
+        }
+        
+        #app {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+        
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            touch-action: none; /* Prevent browser touch gestures */
+        }
+        
+        /* Status bar - bottom */
+        #status-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 32px;
+            background: rgba(26, 26, 46, 0.95);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            font-size: 12px;
+            color: #888;
+            gap: 24px;
+        }
+        
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .status-item.active {
+            color: #4ade80;
+        }
+        
+        .status-key {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        
+        /* Toolbar - top */
+        #toolbar {
+            position: absolute;
+            top: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(26, 26, 46, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 8px;
+            display: flex;
+            gap: 4px;
+        }
+        
+        .tool-btn {
+            width: 40px;
+            height: 40px;
+            border: none;
+            background: transparent;
+            color: #888;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            transition: all 0.15s ease;
+        }
+        
+        .tool-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+        
+        .tool-btn.active {
+            background: #4f46e5;
+            color: #fff;
+        }
+        
+        .tool-btn[title]:hover::after {
+            content: attr(title);
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            margin-top: 8px;
+            background: rgba(0, 0, 0, 0.9);
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+        
+        /* Grid controls - top right */
+        #grid-controls {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            background: rgba(26, 26, 46, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 12px;
+        }
+        
+        #grid-controls label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            cursor: pointer;
+        }
+        
+        #grid-controls input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+        
+        .grid-size-buttons {
+            display: flex;
+            gap: 4px;
+        }
+        
+        .grid-size-btn {
+            padding: 4px 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: transparent;
+            color: #888;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.15s ease;
+        }
+        
+        .grid-size-btn:hover {
+            border-color: #4f46e5;
+            color: #fff;
+        }
+        
+        .grid-size-btn.active {
+            background: #4f46e5;
+            border-color: #4f46e5;
+            color: #fff;
+        }
+        
+        /* View cube - top right (left of grid controls) */
+        #view-cube-container {
+            position: absolute;
+            top: 16px;
+            right: 260px;
+            width: 100px;
+            height: 100px;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        #view-cube-container canvas {
+            display: block;
+        }
+
+        /* View controls - bottom right */
+        #view-controls {
+            position: absolute;
+            bottom: 48px;
+            right: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .view-btn {
+            width: 36px;
+            height: 36px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(26, 26, 46, 0.95);
+            color: #888;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 600;
+            transition: all 0.15s ease;
+        }
+
+        .view-btn:hover {
+            border-color: #4f46e5;
+            color: #fff;
+        }
+        
+        /* Help hint - bottom left */
+        #help-hint {
+            position: absolute;
+            bottom: 48px;
+            left: 16px;
+            background: rgba(26, 26, 46, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 11px;
+            color: #666;
+            line-height: 1.6;
+            max-width: 200px;
+        }
+        
+        #help-hint strong {
+            color: #888;
+        }
+
+        /* Context menu */
+        .context-menu-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 999;
+        }
+
+        .context-menu-backdrop.visible {
+            display: block;
+        }
+
+        .context-menu {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            min-width: 180px;
+            background: rgba(30, 30, 52, 0.98);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 8px;
+            padding: 4px 0;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(12px);
+        }
+
+        .context-menu.visible {
+            display: block;
+        }
+
+        .context-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #ccc;
+            transition: background 0.1s ease;
+        }
+
+        .context-menu-item:hover {
+            background: rgba(79, 70, 229, 0.4);
+            color: #fff;
+        }
+
+        .context-menu-icon {
+            width: 18px;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .context-menu-label {
+            flex: 1;
+        }
+
+        .context-menu-shortcut {
+            font-size: 11px;
+            color: #666;
+            margin-left: 16px;
+        }
+
+        .context-menu-separator {
+            height: 1px;
+            background: rgba(255, 255, 255, 0.1);
+            margin: 4px 8px;
+        }
+        /* Loading overlay for OCCT */
+        #loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #1a1a2e;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+            transition: opacity 0.3s ease;
+        }
+
+        #loading-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        #loading-overlay .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #6366f1;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        #loading-overlay .loading-text {
+            font-size: 14px;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading overlay (shown while OCCT WASM loads) -->
+    <div id="loading-overlay">
+        <div class="spinner"></div>
+        <div class="loading-text">Loading geometry engine...</div>
+    </div>
+
+    <div id="app">
+        <div id="canvas-container"></div>
+        
+        <!-- Toolbar -->
+        <div id="toolbar">
+            <button class="tool-btn" id="undo-btn" title="Undo (Ctrl+Z)">↶</button>
+            <button class="tool-btn" id="redo-btn" title="Redo (Ctrl+Y)">↷</button>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.1);margin:0 4px;"></div>
+            <button class="tool-btn active" data-tool="select" title="Select (V)">⎘</button>
+            <button class="tool-btn" data-tool="rectangle" title="Rectangle (R)">▭</button>
+            <button class="tool-btn" data-tool="circle" title="Circle (C)">○</button>
+            <button class="tool-btn" data-tool="extrude" title="Extrude (E)">⬆</button>
+            <button class="tool-btn" data-tool="line" title="Line (L)">╱</button>
+        </div>
+        
+        <!-- View cube -->
+        <div id="view-cube-container"></div>
+
+        <!-- Grid controls -->
+        <div id="grid-controls">
+            <label>
+                <input type="checkbox" id="snap-toggle" checked>
+                Grid Snap
+            </label>
+            <div class="grid-size-buttons">
+                <button class="grid-size-btn" data-size="0.1">0.1</button>
+                <button class="grid-size-btn" data-size="0.25">0.25</button>
+                <button class="grid-size-btn active" data-size="0.5">0.5</button>
+                <button class="grid-size-btn" data-size="1">1.0</button>
+            </div>
+        </div>
+        
+        <!-- View controls -->
+        <div id="view-controls">
+            <button class="view-btn" id="view-front" title="Front View (1)">F</button>
+            <button class="view-btn" id="view-right" title="Right View (2)">R</button>
+            <button class="view-btn" id="view-top" title="Top View (3)">T</button>
+            <button class="view-btn" id="view-3d" title="3D View (0)">3D</button>
+        </div>
+        
+        <!-- Help hint -->
+        <div id="help-hint">
+            <strong>Camera:</strong><br>
+            Shift+drag: orbit<br>
+            Right-drag: pan<br>
+            Scroll: zoom<br>
+            <br>
+            <strong>Tools:</strong><br>
+            V: Select, R: Rect<br>
+            C: Circle, E: Extrude<br>
+            D: Dims, Shift+D: Dup<br>
+            Del: Delete<br>
+            Ctrl+Z: Undo, Ctrl+Y: Redo
+        </div>
+        
+        <!-- Status bar -->
+        <div id="status-bar">
+            <div class="status-item">
+                <span>Tool:</span>
+                <strong id="current-tool">Select</strong>
+            </div>
+            <div class="status-item active" id="snap-status">
+                <span>Snap:</span>
+                <strong>0.5</strong>
+            </div>
+            <div class="status-item" id="coords-display">
+                <span>Snap:</span>
+                <strong id="coord-x">0.00</strong>
+                <span>,</span>
+                <strong id="coord-z">0.00</strong>
+            </div>
+            <div class="status-item">
+                <span class="status-key">G</span>
+                <span>Toggle Snap</span>
+            </div>
+            <div class="status-item">
+                <span class="status-key">1-3</span>
+                <span>Views</span>
+            </div>
+        </div>
+    </div>
+    
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import { init, setGridSize, setSnapSize, getState, setActiveTool, activateRectangleTool, deactivateRectangleTool, activateCircleTool, deactivateCircleTool, activateSelectTool, deactivateSelectTool, activateExtrudeTool, deactivateExtrudeTool, activateBodySelectTool, deactivateBodySelectTool, exitSketchOnFace, isInSketchOnFaceMode, undo, redo } from './src/main.js';
+        import { setFrontView, setRightView, setTopView, set3DView } from './src/input/camera.js';
+        import { setSnapEnabled, isSnapEnabled } from './src/core/state.js';
+        import { onPointer } from './src/input/pointer.js';
+        import { snap } from './src/core/snap.js';
+        import { initOCCT } from './src/core/occtInit.js';
+
+        // Initialize app (scene, camera, grid — works without OCCT)
+        const container = document.getElementById('canvas-container');
+        const viewCubeContainer = document.getElementById('view-cube-container');
+        init(container, viewCubeContainer);
+
+        // Load OCCT geometry engine in background
+        const loadingOverlay = document.getElementById('loading-overlay');
+        initOCCT().then(() => {
+            loadingOverlay.classList.add('hidden');
+            setTimeout(() => loadingOverlay.remove(), 300);
+        }).catch(err => {
+            loadingOverlay.querySelector('.loading-text').textContent =
+                'Geometry engine failed to load. Refresh to retry.';
+            loadingOverlay.querySelector('.spinner').style.display = 'none';
+            console.error('OCCT load failed:', err);
+        });
+
+        // =================================================================
+        // COORDINATE DISPLAY (shows snapped coordinates)
+        // =================================================================
+        const coordX = document.getElementById('coord-x');
+        const coordZ = document.getElementById('coord-z');
+
+        onPointer('move', (state) => {
+            const snapped = snap(state.worldX, state.worldZ);
+            coordX.textContent = snapped.x.toFixed(2);
+            coordZ.textContent = snapped.z.toFixed(2);
+        });
+
+        // =================================================================
+        // TOOL SWITCHING
+        // =================================================================
+        const toolButtons = document.querySelectorAll('.tool-btn');
+        const currentToolDisplay = document.getElementById('current-tool');
+        let currentTool = 'select';
+
+        function setTool(toolName) {
+            // Deactivate previous tool
+            if (currentTool === 'rectangle') {
+                deactivateRectangleTool();
+            } else if (currentTool === 'circle') {
+                deactivateCircleTool();
+            } else if (currentTool === 'select') {
+                deactivateSelectTool();
+                deactivateBodySelectTool();
+            } else if (currentTool === 'extrude') {
+                deactivateExtrudeTool();
+            }
+
+            // Update UI
+            toolButtons.forEach(btn => btn.classList.remove('active'));
+            const activeBtn = document.querySelector(`.tool-btn[data-tool="${toolName}"]`);
+            if (activeBtn) activeBtn.classList.add('active');
+
+            currentTool = toolName;
+            currentToolDisplay.textContent = toolName.charAt(0).toUpperCase() + toolName.slice(1);
+            setActiveTool(toolName);
+
+            // Activate new tool
+            if (toolName === 'rectangle') {
+                activateRectangleTool();
+            } else if (toolName === 'circle') {
+                activateCircleTool();
+            } else if (toolName === 'select') {
+                activateSelectTool();
+                activateBodySelectTool(container);
+            } else if (toolName === 'extrude') {
+                activateExtrudeTool();
+            }
+
+            console.log('Tool:', toolName);
+        }
+
+        // Click handlers for tool buttons
+        toolButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const tool = btn.dataset.tool;
+                if (tool) setTool(tool);
+            });
+        });
+
+        // Activate initial tool (select)
+        activateSelectTool();
+        activateBodySelectTool(container);
+
+        // Listen for tool switch from context menu
+        window.addEventListener('fromscratch:settool', (e) => {
+            setTool(e.detail.tool);
+        });
+        
+        // =================================================================
+        // UI BINDINGS
+        // =================================================================
+        
+        // Grid size buttons
+        document.querySelectorAll('.grid-size-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const size = parseFloat(btn.dataset.size);
+                setGridSize(size);
+                setSnapSize(size);
+                
+                // Update button states
+                document.querySelectorAll('.grid-size-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                // Update status bar
+                document.querySelector('#snap-status strong').textContent = size;
+            });
+        });
+        
+        // Snap toggle
+        document.getElementById('snap-toggle').addEventListener('change', (e) => {
+            setSnapEnabled(e.target.checked);
+            document.getElementById('snap-status').classList.toggle('active', e.target.checked);
+        });
+        
+        // View buttons
+        document.getElementById('view-front').addEventListener('click', setFrontView);
+        document.getElementById('view-right').addEventListener('click', setRightView);
+        document.getElementById('view-top').addEventListener('click', setTopView);
+        document.getElementById('view-3d').addEventListener('click', set3DView);
+        
+        // Wire undo/redo buttons
+        document.getElementById('undo-btn').addEventListener('click', undo);
+        document.getElementById('redo-btn').addEventListener('click', redo);
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // Ignore if typing in input
+            if (e.target.tagName === 'INPUT') return;
+
+            // Undo/Redo (must be before tool shortcuts)
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+                e.preventDefault();
+                undo();
+                return;
+            }
+            if ((e.ctrlKey || e.metaKey) && ((e.shiftKey && e.key.toLowerCase() === 'z') || e.key.toLowerCase() === 'y')) {
+                e.preventDefault();
+                redo();
+                return;
+            }
+
+            switch (e.key.toLowerCase()) {
+                // Tools
+                case 'v':
+                    setTool('select');
+                    break;
+                case 'r':
+                    setTool('rectangle');
+                    break;
+                case 'c':
+                    setTool('circle');
+                    break;
+                case 'e':
+                    setTool('extrude');
+                    break;
+                case 'l':
+                    setTool('line');
+                    break;
+                case 'escape':
+                    if (isInSketchOnFaceMode()) {
+                        exitSketchOnFace();
+                        setTool('select');
+                    } else {
+                        setTool('select');
+                    }
+                    break;
+                // Snap toggle
+                case 'g':
+                    const snapCheckbox = document.getElementById('snap-toggle');
+                    snapCheckbox.checked = !snapCheckbox.checked;
+                    snapCheckbox.dispatchEvent(new Event('change'));
+                    break;
+                // Views
+                case '1':
+                    setFrontView();
+                    break;
+                case '2':
+                    setRightView();
+                    break;
+                case '3':
+                    setTopView();
+                    break;
+                case '0':
+                    set3DView();
+                    break;
+            }
+        });
+        
+        console.log('FromScratch POC 1: The Stage');
+        console.log('=============================');
+        console.log('✓ Grid with configurable size');
+        console.log('✓ Camera orbit/pan/zoom');
+        console.log('✓ Touch support');
+        console.log('✓ View presets (1/2/3/0)');
+        console.log('✓ Snap toggle (G)');
+    </script>
+</body>
+</html>

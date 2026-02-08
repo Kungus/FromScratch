@@ -1,0 +1,20 @@
+{
+  "name": "fromscratch",
+  "version": "1.0.0",
+  "description": "Browser-based CAD with professional precision and beginner-friendly UX",
+  "main": "meshTopology.js",
+  "scripts": {
+    "setup": "node scripts/copy-occt.js",
+    "postinstall": "node scripts/copy-occt.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["cad", "3d", "opencascade", "browser", "webgl"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "opencascade.js": "^2.0.0-beta.fdece36"
+  },
+  "devDependencies": {
+    "prettier": "^3.8.1"
+  }
+}
