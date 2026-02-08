@@ -589,17 +589,22 @@ export function getVertexPosition(shape, vertexIndex) {
 
 /**
  * Rebuild a shape with some vertices moved to new positions.
- * Only works for shapes with planar faces and straight edges.
+ * Tries shared-edge topology first (proper B-rep for downstream OCCT ops),
+ * falls back to disconnected faces if shared edges aren't possible.
  * @param {Object} shape - TopoDS_Shape (original)
  * @param {Array<{from: {x,y,z}, to: {x,y,z}}>} vertexMoves - Old → new position pairs
- * @returns {Object} New TopoDS_Shape (solid)
- * @throws {Error} If shape has curved edges/faces or result is invalid
+ * @returns {Object} New TopoDS_Shape (solid or shell)
+ * @throws {Error} If no valid faces could be rebuilt
  */
 export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
     const oc = getOC();
     const TOLERANCE = 1e-4;
 
-    // Helper: check if a position matches a "from" in vertexMoves, return the "to"
+    // Position key for shared vertex/edge deduplication
+    function posKey(x, y, z) {
+        return `${Math.round(x / TOLERANCE)},${Math.round(y / TOLERANCE)},${Math.round(z / TOLERANCE)}`;
+    }
+
     function applyMove(x, y, z) {
         for (const move of vertexMoves) {
             if (Math.abs(x - move.from.x) < TOLERANCE &&
@@ -608,20 +613,284 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
                 return move.to;
             }
         }
-        return null; // null = no move needed
+        return null;
     }
 
-    // Helper: check if a point was moved
     function wasMoved(x, y, z) {
         return applyMove(x, y, z) !== null;
     }
 
-    // Helper: get moved position or original
     function getMovedPos(x, y, z) {
         return applyMove(x, y, z) || { x, y, z };
     }
 
-    // Build new faces
+    // ===== Phase 1: Extract face boundary vertex positions =====
+    const faceBoundaries = []; // Array of { positions: [{x,y,z}] }
+    let hasNonPlanarFaces = false;
+
+    const faceExplorer = new oc.TopExp_Explorer_2(
+        shape,
+        oc.TopAbs_ShapeEnum.TopAbs_FACE,
+        oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+
+    while (faceExplorer.More()) {
+        const face = oc.TopoDS.Face_1(faceExplorer.Current());
+        const wireExp = new oc.TopExp_Explorer_2(
+            face, oc.TopAbs_ShapeEnum.TopAbs_WIRE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+        );
+
+        if (!wireExp.More()) {
+            wireExp.delete();
+            face.delete();
+            hasNonPlanarFaces = true;
+            faceExplorer.Next();
+            continue;
+        }
+
+        const wire = oc.TopoDS.Wire_1(wireExp.Current());
+        wireExp.delete();
+
+        const edgeExp = new oc.BRepTools_WireExplorer_2(wire);
+        const positions = [];
+
+        while (edgeExp.More()) {
+            const currentEdge = edgeExp.Current();
+            const firstV = oc.TopExp.FirstVertex(currentEdge, true);
+            const lastV = oc.TopExp.LastVertex(currentEdge, true);
+            const p1 = oc.BRep_Tool.Pnt(firstV);
+            const p2 = oc.BRep_Tool.Pnt(lastV);
+
+            // Detect degenerate/curved edge (self-loop = circle, etc.)
+            const x1 = p1.X(), y1 = p1.Y(), z1 = p1.Z();
+            const x2 = p2.X(), y2 = p2.Y(), z2 = p2.Z();
+            const dist = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2);
+            if (dist < TOLERANCE) {
+                hasNonPlanarFaces = true;
+            }
+
+            positions.push(getMovedPos(x1, y1, z1));
+
+            p1.delete(); p2.delete();
+            firstV.delete(); lastV.delete();
+            edgeExp.Next();
+        }
+        edgeExp.delete();
+        wire.delete();
+        face.delete();
+
+        if (positions.length < 3) hasNonPlanarFaces = true;
+        faceBoundaries.push({ positions });
+        faceExplorer.Next();
+    }
+    faceExplorer.delete();
+
+    if (faceBoundaries.length === 0) {
+        throw new Error('Move failed: no faces found in shape');
+    }
+
+    // ===== Phase 2: Try shared-edge topology (proper B-rep) =====
+    // Only possible when all faces are planar with straight edges.
+    // Shared edges give the shell proper topology so downstream OCCT ops
+    // (fillet, chamfer, boolean) work correctly.
+    if (!hasNonPlanarFaces && faceBoundaries.length >= 4) {
+        try {
+            const result = _buildWithSharedEdges(oc, faceBoundaries, posKey, TOLERANCE);
+            if (result) {
+                console.log('rebuildShapeWithMovedVertices: shared-edge topology succeeded');
+                return result;
+            }
+        } catch (e) {
+            console.warn('Shared-edge rebuild failed:', e.message || e);
+        }
+    }
+
+    // ===== Phase 3: Disconnected fallback (renders OK, topology may be broken) =====
+    console.log('rebuildShapeWithMovedVertices: using disconnected fallback');
+    return _buildDisconnectedFaces(oc, shape, TOLERANCE, wasMoved, getMovedPos);
+}
+
+/**
+ * Build shape with proper shared-edge topology.
+ * Creates shared TopoDS_Vertex objects, then shared TopoDS_Edge objects
+ * from those vertices. Faces built from shared edges have proper adjacency.
+ * @returns {Object|null} TopoDS_Shape with proper topology, or null if build fails
+ */
+function _buildWithSharedEdges(oc, faceBoundaries, posKey, TOLERANCE) {
+    const tempObjects = []; // OCCT wrappers to clean up (safe: solid holds internal TShape refs)
+
+    // --- Probe for MakeVertex constructor (may vary by OCCT.js build) ---
+    let makeVertexFn = null;
+    const probePoint = new oc.gp_Pnt_3(0, 0, 0);
+    for (const ctorName of ['BRepBuilderAPI_MakeVertex_1', 'BRepBuilderAPI_MakeVertex']) {
+        if (typeof oc[ctorName] === 'function') {
+            try {
+                const test = new oc[ctorName](probePoint);
+                test.delete();
+                makeVertexFn = (pt) => new oc[ctorName](pt);
+                break;
+            } catch (_) { /* try next */ }
+        }
+    }
+    probePoint.delete();
+
+    if (!makeVertexFn) {
+        console.warn('BRepBuilderAPI_MakeVertex not available — cannot build shared edges');
+        return null;
+    }
+
+    // --- Create shared vertices ---
+    const vertexMap = new Map(); // posKey → TopoDS_Vertex
+
+    for (const fb of faceBoundaries) {
+        for (const pos of fb.positions) {
+            const key = posKey(pos.x, pos.y, pos.z);
+            if (!vertexMap.has(key)) {
+                const gp = new oc.gp_Pnt_3(pos.x, pos.y, pos.z);
+                const vb = makeVertexFn(gp);
+                const vertex = vb.Vertex();
+                vertexMap.set(key, vertex);
+                tempObjects.push(vertex);
+                vb.delete();
+                gp.delete();
+            }
+        }
+    }
+
+    // --- Create shared edges (one per unique unordered vertex pair) ---
+    const edgeMap = new Map(); // "k1|k2" (sorted) → TopoDS_Edge
+
+    for (const fb of faceBoundaries) {
+        const verts = fb.positions;
+        for (let i = 0; i < verts.length; i++) {
+            const p1 = verts[i];
+            const p2 = verts[(i + 1) % verts.length];
+            const k1 = posKey(p1.x, p1.y, p1.z);
+            const k2 = posKey(p2.x, p2.y, p2.z);
+            if (k1 === k2) continue;
+
+            const edgeKey = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+            if (!edgeMap.has(edgeKey)) {
+                const v1 = vertexMap.get(k1);
+                const v2 = vertexMap.get(k2);
+                if (!v1 || !v2) continue;
+
+                try {
+                    const eb = new oc.BRepBuilderAPI_MakeEdge_2(v1, v2);
+                    if (eb.IsDone()) {
+                        const edge = eb.Edge();
+                        edgeMap.set(edgeKey, edge);
+                        tempObjects.push(edge);
+                    }
+                    eb.delete();
+                } catch (e) {
+                    // MakeEdge_2 (vertex overload) not available
+                    tempObjects.forEach(o => { try { o.delete(); } catch (_) {} });
+                    return null;
+                }
+            }
+        }
+    }
+
+    // --- Build faces from shared edges ---
+    const newFaces = [];
+
+    for (const fb of faceBoundaries) {
+        const verts = fb.positions;
+        const wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
+
+        for (let i = 0; i < verts.length; i++) {
+            const p1 = verts[i];
+            const p2 = verts[(i + 1) % verts.length];
+            const k1 = posKey(p1.x, p1.y, p1.z);
+            const k2 = posKey(p2.x, p2.y, p2.z);
+            if (k1 === k2) continue;
+
+            const edgeKey = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+            const edge = edgeMap.get(edgeKey);
+            if (edge) {
+                wireBuilder.Add_1(edge);
+            }
+        }
+
+        if (!wireBuilder.IsDone()) {
+            wireBuilder.delete();
+            newFaces.forEach(f => f.delete());
+            tempObjects.forEach(o => { try { o.delete(); } catch (_) {} });
+            return null;
+        }
+
+        const wire = wireBuilder.Wire();
+        wireBuilder.delete();
+
+        try {
+            const faceMaker = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
+            if (faceMaker.IsDone()) {
+                newFaces.push(faceMaker.Shape());
+            } else {
+                faceMaker.delete();
+                wire.delete();
+                newFaces.forEach(f => f.delete());
+                tempObjects.forEach(o => { try { o.delete(); } catch (_) {} });
+                return null;
+            }
+            faceMaker.delete();
+        } catch (e) {
+            wire.delete();
+            newFaces.forEach(f => f.delete());
+            tempObjects.forEach(o => { try { o.delete(); } catch (_) {} });
+            return null;
+        }
+        wire.delete();
+    }
+
+    if (newFaces.length < 4) {
+        newFaces.forEach(f => f.delete());
+        tempObjects.forEach(o => { try { o.delete(); } catch (_) {} });
+        return null;
+    }
+
+    // --- Assemble shell from faces ---
+    const builder = new oc.BRep_Builder();
+    const shell = new oc.TopoDS_Shell();
+    builder.MakeShell(shell);
+    for (const f of newFaces) {
+        builder.Add(shell, f);
+    }
+
+    // --- Make solid (using _3 = Shell overload) ---
+    let result = null;
+    try {
+        const solidMaker = new oc.BRepBuilderAPI_MakeSolid_3(shell);
+        if (solidMaker.IsDone()) {
+            result = solidMaker.Shape();
+        }
+        solidMaker.delete();
+    } catch (_) {
+        // MakeSolid_3 not available or failed — fall through
+    }
+
+    if (!result) {
+        result = shell;
+    } else {
+        shell.delete();
+    }
+    builder.delete();
+
+    // Cleanup wrappers (safe: the solid holds internal refs to underlying TShape data)
+    newFaces.forEach(f => { try { f.delete(); } catch (_) {} });
+    tempObjects.forEach(o => { try { o.delete(); } catch (_) {} });
+
+    return result;
+}
+
+/**
+ * Fallback: Build shape with disconnected faces.
+ * Each face is rebuilt independently — edges are NOT shared between faces.
+ * Renders correctly but topology is broken for some OCCT operations.
+ * Preserves original faces whose vertices weren't moved (keeps curves/fillets).
+ */
+function _buildDisconnectedFaces(oc, shape, TOLERANCE, wasMoved, getMovedPos) {
     const newFaces = [];
     const faceExplorer = new oc.TopExp_Explorer_2(
         shape,
@@ -629,12 +898,12 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
         oc.TopAbs_ShapeEnum.TopAbs_SHAPE
     );
 
-    const intermediates = []; // track all OCCT objects for cleanup
+    const intermediates = [];
 
     while (faceExplorer.More()) {
         const face = oc.TopoDS.Face_1(faceExplorer.Current());
 
-        // First check: does this face have any moved vertices?
+        // Check if this face has any moved vertices
         let faceHasMovedVerts = false;
         const vertChecker = new oc.TopExp_Explorer_2(
             face,
@@ -655,14 +924,13 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
         vertChecker.delete();
 
         if (!faceHasMovedVerts) {
-            // No vertices moved on this face — keep original face as-is
-            // (preserves curved/non-planar surfaces like fillets, cylinder sides)
-            newFaces.push(face); // don't delete — it goes into the sewing
+            // Keep original face (preserves curved/non-planar surfaces)
+            newFaces.push(face);
             faceExplorer.Next();
             continue;
         }
 
-        // Face has moved vertices — rebuild it with new wire
+        // Rebuild face with moved vertex positions
         const wireExplorer = new oc.TopExp_Explorer_2(
             face,
             oc.TopAbs_ShapeEnum.TopAbs_WIRE,
@@ -679,7 +947,6 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
         const wire = oc.TopoDS.Wire_1(wireExplorer.Current());
         wireExplorer.delete();
 
-        // Iterate edges in the wire in order
         const wireEdgeExplorer = new oc.BRepTools_WireExplorer_2(wire);
         const newWireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
         intermediates.push(newWireBuilder);
@@ -697,10 +964,8 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
             const v2Moved = wasMoved(p2x, p2y, p2z);
 
             if (!v1Moved && !v2Moved) {
-                // Neither vertex moved — keep original edge (preserves curves)
                 newWireBuilder.Add_1(currentEdge);
             } else {
-                // At least one vertex moved — create new straight edge at moved positions
                 const newP1 = getMovedPos(p1x, p1y, p1z);
                 const newP2 = getMovedPos(p2x, p2y, p2z);
 
@@ -739,14 +1004,12 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
             try {
                 const faceMaker = new oc.BRepBuilderAPI_MakeFace_15(newWire, true);
                 if (faceMaker.IsDone()) {
-                    const newFace = faceMaker.Shape();
-                    newFaces.push(newFace);
+                    newFaces.push(faceMaker.Shape());
                     faceMaker.delete();
                 } else {
                     faceMaker.delete();
                 }
             } catch (e) {
-                // Non-planar face after vertex move — skip and let validation catch it
                 console.warn('Face rebuild failed:', e.message || e);
             } finally {
                 newWire.delete();
@@ -762,8 +1025,7 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
         throw new Error('Move failed: no valid faces could be rebuilt');
     }
 
-    // Build shell from faces using BRep_Builder (more universally available than Sewing)
-    let result;
+    // Build shell from faces
     const builder = new oc.BRep_Builder();
     const shell = new oc.TopoDS_Shell();
     builder.MakeShell(shell);
@@ -771,40 +1033,27 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
         builder.Add(shell, f);
     }
 
-    // Try to make a solid from the shell
+    // Try to make solid (_3 = Shell overload, _2 was CompSolid = always failed)
+    let result = null;
     try {
-        const solidMaker = new oc.BRepBuilderAPI_MakeSolid_2(shell);
+        const solidMaker = new oc.BRepBuilderAPI_MakeSolid_3(shell);
         if (solidMaker.IsDone()) {
             result = solidMaker.Shape();
         }
         solidMaker.delete();
-    } catch (e) {
-        console.warn('Solid creation from shell failed:', e.message || e);
+    } catch (_) {
+        // MakeSolid_3 not available
     }
 
     if (!result) {
-        // Fall back to shell (not a solid, but might still render)
         result = shell;
     } else {
         shell.delete();
     }
+    builder.delete();
 
-    // Validate
-    try {
-        const analyzer = new oc.BRepCheck_Analyzer_1(result, true);
-        const isValid = analyzer.IsValid();
-        analyzer.delete();
-        if (!isValid) {
-            console.warn('Rebuilt shape validation failed — result may have issues');
-        }
-    } catch (e) {
-        console.warn('Shape validation skipped:', e.message || e);
-    }
-
-    // Cleanup
     newFaces.forEach(f => { try { f.delete(); } catch (_) {} });
     intermediates.forEach(o => { try { o.delete(); } catch (_) {} });
-    builder.delete();
 
     return result;
 }

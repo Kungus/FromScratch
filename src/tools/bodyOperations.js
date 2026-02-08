@@ -12,6 +12,63 @@ import { replaceBodyMesh, removeBodyMesh, getBodyGroup } from '../render/bodyRen
 import { updateSelectionHighlight, updateMultiSelectionHighlight } from '../render/selectionHighlight.js';
 
 /**
+ * Validate a tessellation result for obvious corruption.
+ * Catches garbage output from OCCT operations on topologically invalid shapes.
+ * @param {Object} tessellation - From tessellateShape()
+ * @param {Object} [refTessellation] - Reference tessellation to compare bounds against
+ * @returns {{valid: boolean, reason: string}}
+ */
+function validateTessellation(tessellation, refTessellation) {
+    if (!tessellation || !tessellation.positions || tessellation.positions.length === 0) {
+        return { valid: false, reason: 'empty tessellation' };
+    }
+
+    const pos = tessellation.positions;
+
+    // Check for NaN/Infinity
+    for (let i = 0; i < pos.length; i++) {
+        if (!isFinite(pos[i])) {
+            return { valid: false, reason: 'NaN/Infinity in vertex positions' };
+        }
+    }
+
+    // Compute bounding box
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < pos.length; i += 3) {
+        minX = Math.min(minX, pos[i]);     maxX = Math.max(maxX, pos[i]);
+        minY = Math.min(minY, pos[i + 1]); maxY = Math.max(maxY, pos[i + 1]);
+        minZ = Math.min(minZ, pos[i + 2]); maxZ = Math.max(maxZ, pos[i + 2]);
+    }
+
+    // If we have a reference, check that the result isn't wildly different
+    if (refTessellation && refTessellation.positions && refTessellation.positions.length > 0) {
+        const rp = refTessellation.positions;
+        let rMinX = Infinity, rMinY = Infinity, rMinZ = Infinity;
+        let rMaxX = -Infinity, rMaxY = -Infinity, rMaxZ = -Infinity;
+        for (let i = 0; i < rp.length; i += 3) {
+            rMinX = Math.min(rMinX, rp[i]);     rMaxX = Math.max(rMaxX, rp[i]);
+            rMinY = Math.min(rMinY, rp[i + 1]); rMaxY = Math.max(rMaxY, rp[i + 1]);
+            rMinZ = Math.min(rMinZ, rp[i + 2]); rMaxZ = Math.max(rMaxZ, rp[i + 2]);
+        }
+
+        const refDiag = Math.sqrt(
+            (rMaxX - rMinX) ** 2 + (rMaxY - rMinY) ** 2 + (rMaxZ - rMinZ) ** 2
+        );
+        const newDiag = Math.sqrt(
+            (maxX - minX) ** 2 + (maxY - minY) ** 2 + (maxZ - minZ) ** 2
+        );
+
+        // If bounding box grew by more than 5x, something is wrong
+        if (refDiag > 0.01 && newDiag > refDiag * 5) {
+            return { valid: false, reason: `bounding box grew from ${refDiag.toFixed(2)} to ${newDiag.toFixed(2)}` };
+        }
+    }
+
+    return { valid: true, reason: '' };
+}
+
+/**
  * Apply fillet to one or more edges of a body via OCCT
  * @param {string} bodyId - Body to fillet
  * @param {number[]} edgeIndices - Edge indices from topology
@@ -50,6 +107,13 @@ export function applyFillet(bodyId, edgeIndices, radius) {
     try {
         const filletedShape = filletEdges(shape, edges, radius);
         const tessellation = tessellateShape(filletedShape);
+
+        const check = validateTessellation(tessellation, body.tessellation);
+        if (!check.valid) {
+            console.warn(`Fillet produced corrupt geometry (${check.reason}) — rejecting`);
+            filletedShape.delete();
+            return;
+        }
 
         const oldShapeRef = body.occtShapeRef;
         const newShapeRef = storeShape(filletedShape);
@@ -116,6 +180,13 @@ export function applyChamfer(bodyId, edgeIndices, distance) {
     try {
         const chamferedShape = chamferEdges(shape, edges, distance);
         const tessellation = tessellateShape(chamferedShape);
+
+        const check = validateTessellation(tessellation, body.tessellation);
+        if (!check.valid) {
+            console.warn(`Chamfer produced corrupt geometry (${check.reason}) — rejecting`);
+            chamferedShape.delete();
+            return;
+        }
 
         const oldShapeRef = body.occtShapeRef;
         const newShapeRef = storeShape(chamferedShape);
