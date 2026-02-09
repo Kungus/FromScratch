@@ -19,15 +19,16 @@ let previewEdges = null;
 const bodyMaterial = new THREE.MeshStandardMaterial({
     color: 0x6366f1,
     metalness: 0.1,
-    roughness: 0.6
+    roughness: 0.6,
+    side: THREE.DoubleSide
 });
 
 const previewMaterial = new THREE.MeshStandardMaterial({
-    color: 0x6366f1,
+    color: 0x818cf8,
     metalness: 0.1,
     roughness: 0.6,
     transparent: true,
-    opacity: 0.5
+    opacity: 0.9
 });
 
 const edgeMaterial = new THREE.LineBasicMaterial({
@@ -39,7 +40,7 @@ const previewEdgeMaterial = new THREE.LineBasicMaterial({
     color: 0x1e1b4b,
     linewidth: 1,
     transparent: true,
-    opacity: 0.5
+    opacity: 0.9
 });
 
 /**
@@ -422,6 +423,25 @@ export function removeBodyMesh(id) {
 }
 
 /**
+ * Hide a body mesh by ID (sets visible=false). Used during previews so the
+ * original geometry doesn't overlap the preview.
+ * @param {string} id - Body ID
+ */
+export function hideBodyMesh(id) {
+    const body = bodyGroup.getObjectByName(id);
+    if (body) body.visible = false;
+}
+
+/**
+ * Show a previously hidden body mesh.
+ * @param {string} id - Body ID
+ */
+export function showBodyMesh(id) {
+    const body = bodyGroup.getObjectByName(id);
+    if (body) body.visible = true;
+}
+
+/**
  * Get all body meshes data
  */
 export function getBodyMeshes() {
@@ -448,5 +468,7 @@ export default {
     addBodyMesh,
     removeBodyMesh,
     replaceBodyMesh,
-    getBodyMeshes
+    getBodyMeshes,
+    hideBodyMesh,
+    showBodyMesh
 };

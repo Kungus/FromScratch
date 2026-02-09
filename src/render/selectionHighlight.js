@@ -61,8 +61,18 @@ const bodySelectMaterial = new THREE.LineBasicMaterial({
     linewidth: 2
 });
 
+// Face underlay material (subtle green, shown beneath edge/vertex hover)
+const faceUnderlayMaterial = new THREE.MeshBasicMaterial({
+    color: 0x22c55e,
+    transparent: true,
+    opacity: 0.15,
+    side: THREE.DoubleSide,
+    depthTest: false
+});
+
 // Current highlight objects
 let hoverHighlight = null;
+let faceUnderlayHighlight = null;
 let selectionHighlight = null;
 let multiSelectionHighlights = [];
 
@@ -143,6 +153,25 @@ export function updateHoverHighlight(hoverState, bodyGroupRef) {
 
     if (hoverHighlight) {
         highlightGroup.add(hoverHighlight);
+    }
+
+    // Face underlay: when hovering edge/vertex, show subtle face highlight underneath
+    if ((hoverState.type === 'edge' || hoverState.type === 'vertex') && hoverState.faceResult) {
+        const fr = hoverState.faceResult;
+        if (fr.data?.facePositions) {
+            faceUnderlayHighlight = createFaceHighlightFromTriangles(
+                fr.data.facePositions,
+                faceUnderlayMaterial
+            );
+        } else if (fr.data?.allVertices) {
+            faceUnderlayHighlight = createFaceHighlight(
+                fr.data.allVertices,
+                faceUnderlayMaterial
+            );
+        }
+        if (faceUnderlayHighlight) {
+            highlightGroup.add(faceUnderlayHighlight);
+        }
     }
 }
 
@@ -395,6 +424,11 @@ function clearHoverHighlight() {
         highlightGroup.remove(hoverHighlight);
         disposeHighlight(hoverHighlight);
         hoverHighlight = null;
+    }
+    if (faceUnderlayHighlight) {
+        highlightGroup.remove(faceUnderlayHighlight);
+        disposeHighlight(faceUnderlayHighlight);
+        faceUnderlayHighlight = null;
     }
 }
 

@@ -5,8 +5,9 @@
 
 import { getBodyById, updateBody, removeBody, clearBodySelection, getBodySelection, clearBodyMultiSelection } from '../core/state.js';
 import { getShape, removeShape, storeShape } from '../core/occtShapeStore.js';
+import { getOC } from '../core/occtInit.js';
 import { pushUndoSnapshot } from '../core/undoRedo.js';
-import { filletEdges, chamferEdges, getEdgeByIndex, getFaceByIndex, extrudeFaceAndFuse, extrudeFaceAndCut, booleanCut, booleanFuse, translateShape, getEdgeEndpoints, getVertexPosition, rebuildShapeWithMovedVertices, getFaceVertexPositions } from '../core/occtEngine.js';
+import { filletEdges, chamferEdges, getEdgeByIndex, getFaceByIndex, extrudeFaceAndFuse, extrudeFaceAndCut, booleanCut, booleanFuse, translateShape, getEdgeEndpoints, getVertexPosition, rebuildShapeWithMovedVertices, getFaceVertexPositions, countTopologyElements } from '../core/occtEngine.js';
 import { tessellateShape } from '../core/occtTessellate.js';
 import { replaceBodyMesh, removeBodyMesh, getBodyGroup } from '../render/bodyRender.js';
 import { updateSelectionHighlight, updateMultiSelectionHighlight } from '../render/selectionHighlight.js';
@@ -281,7 +282,15 @@ export function applyFaceExtrusion(bodyId, faceIndex, normal, height) {
         updateSelectionHighlight(getBodySelection(), getBodyGroup());
 
         const opName = height >= 0 ? 'extruded' : 'cut';
+        // Diagnostic: log face topology after operation
+        const oc = getOC();
+        const faceCount = countTopologyElements(resultShape, oc.TopAbs_ShapeEnum.TopAbs_FACE);
+        const edgeCount = countTopologyElements(resultShape, oc.TopAbs_ShapeEnum.TopAbs_EDGE);
         console.log(`Face extrusion ${opName}: face ${faceIndex}, height ${height}`);
+        console.log(`  Result topology: ${faceCount} faces, ${edgeCount} edges`);
+        console.log(`  FaceMap (${tessellation.faceMap.length} entries):`, tessellation.faceMap.map(f =>
+            `face${f.faceIndex}: tris ${f.startTriangle}-${f.endTriangle} normal(${f.normal.x.toFixed(2)},${f.normal.y.toFixed(2)},${f.normal.z.toFixed(2)})`
+        ));
     } catch (e) {
         console.error('Face extrusion failed:', e.message || e);
     } finally {

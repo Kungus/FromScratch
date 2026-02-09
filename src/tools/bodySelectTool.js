@@ -160,7 +160,8 @@ function handlePointerDown(state) {
                     subElement.type,
                     bodyHit.bodyId,
                     subElement.index,
-                    subElement.data
+                    subElement.data,
+                    subElement.faceResult || null
                 );
                 notifySelectionChange({
                     action: 'multiSelect',
@@ -176,7 +177,8 @@ function handlePointerDown(state) {
                     subElement.type,
                     bodyHit.bodyId,
                     subElement.index,
-                    subElement.data
+                    subElement.data,
+                    subElement.faceResult || null
                 );
                 notifySelectionChange({
                     action: 'selectSubElement',
@@ -225,7 +227,8 @@ function handlePointerMove(state) {
         subElement.type,
         bodyHit.bodyId,
         subElement.index,
-        subElement.data
+        subElement.data,
+        subElement.faceResult || null
     );
     notifyHoverChange({
         type: subElement.type,

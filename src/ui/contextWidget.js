@@ -5,7 +5,7 @@
  */
 
 import * as THREE from 'three';
-import { subscribe, getBodySelection, getBodyById, getBodies, getBodyMultiSelection, removeBody, clearBodySelection } from '../core/state.js';
+import { subscribe, getBodySelection, getBodyById, getBodies, getBodyMultiSelection, removeBody, clearBodySelection, getSketches } from '../core/state.js';
 import { getCamera } from '../input/camera.js';
 import { pushUndoSnapshot } from '../core/undoRedo.js';
 import { removeBodyMesh, getBodyGroup } from '../render/bodyRender.js';
@@ -147,8 +147,20 @@ function buildWidgetItems(selection) {
     switch (selection.type) {
         case 'face':
             if (data) {
+                // Check if there are sketches drawn on this body
+                const faceSketches = getSketches().filter(s => s.parentBodyId === bodyId);
+                if (faceSketches.length > 0) {
+                    items.push({
+                        icon: '\u2B06', label: 'Extrude Sketch',
+                        shortcut: 'E',
+                        action: () => {
+                            // Switch to extrude tool — user clicks on sketch to extrude it
+                            window.dispatchEvent(new CustomEvent('fromscratch:settool', { detail: { tool: 'extrude' } }));
+                        }
+                    });
+                }
                 items.push({
-                    icon: '\u2B06', label: 'Extrude Face',
+                    icon: '\u2195', label: 'Push/Pull Face',
                     action: () => {
                         const faceIndex = data.faceIndex;
                         const normal = data.normal;
@@ -189,17 +201,44 @@ function buildWidgetItems(selection) {
                             _deps.showMoveGizmo(bodyId, 'edge', selection.subElementIndex, data);
                         }
                     });
+                    // Compute edge midpoint for spatial label positioning
+                    const sv = data.startVertex, ev = data.endVertex;
+                    const edgeMidpoint = (sv && ev) ? {
+                        x: (sv.x + ev.x) / 2,
+                        y: (sv.y + ev.y) / 2,
+                        z: (sv.z + ev.z) / 2
+                    } : null;
                     items.push({
                         icon: '\u25EF',
                         label: edgeCount > 1 ? `Fillet ${edgeCount}` : 'Fillet',
                         shortcut: 'F',
-                        action: () => _deps.startFilletMode(bodyId, edgeIndices)
+                        action: () => _deps.startFilletMode(bodyId, edgeIndices, edgeMidpoint)
                     });
                     items.push({
                         icon: '\u25B3',
                         label: edgeCount > 1 ? `Chamfer ${edgeCount}` : 'Chamfer',
                         shortcut: 'K',
-                        action: () => _deps.startChamferMode(bodyId, edgeIndices)
+                        action: () => _deps.startChamferMode(bodyId, edgeIndices, edgeMidpoint)
+                    });
+                }
+                // Face operations (from the face under this edge)
+                if (selection.faceResult?.data) {
+                    const fd = selection.faceResult.data;
+                    items.push({
+                        icon: '\u2195', label: 'Push/Pull Face',
+                        action: () => {
+                            _deps.startFaceExtrudeMode(bodyId, fd.faceIndex, fd.normal, fd.facePositions);
+                        }
+                    });
+                    items.push({
+                        icon: '\u270F', label: 'Sketch on Face',
+                        action: () => {
+                            enterSketchOnFace({
+                                bodyId,
+                                faceIndex: selection.faceResult.index,
+                                faceData: fd
+                            });
+                        }
                     });
                 }
             }
@@ -213,6 +252,26 @@ function buildWidgetItems(selection) {
                         _deps.showMoveGizmo(bodyId, 'vertex', selection.subElementIndex, data);
                     }
                 });
+                // Face operations (from the face under this vertex)
+                if (selection.faceResult?.data) {
+                    const fd = selection.faceResult.data;
+                    items.push({
+                        icon: '\u2195', label: 'Push/Pull Face',
+                        action: () => {
+                            _deps.startFaceExtrudeMode(bodyId, fd.faceIndex, fd.normal, fd.facePositions);
+                        }
+                    });
+                    items.push({
+                        icon: '\u270F', label: 'Sketch on Face',
+                        action: () => {
+                            enterSketchOnFace({
+                                bodyId,
+                                faceIndex: selection.faceResult.index,
+                                faceData: fd
+                            });
+                        }
+                    });
+                }
             }
             break;
 

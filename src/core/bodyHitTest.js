@@ -47,6 +47,64 @@ export function detectSubElement(hitInfo, screenPoint, camera, containerRect) {
 function detectSubElementFromTessellation(hitInfo, screenPoint, camera, containerRect, tessellation) {
     const { faceMap, edgeMap, vertexMap } = tessellation;
 
+    // --- FACE detection FIRST (always computed from hit triangle) ---
+    let faceResult = null;
+    if (faceMap && faceMap.length > 0) {
+        const hitTriIndex = hitInfo.faceIndex;
+        let hitFace = null;
+
+        for (const fm of faceMap) {
+            if (hitTriIndex >= fm.startTriangle && hitTriIndex < fm.endTriangle) {
+                hitFace = fm;
+                break;
+            }
+        }
+
+        if (hitFace) {
+            const positions = tessellation.positions;
+            const indices = tessellation.indices;
+
+            const facePositions = [];
+            const allVertices = [];
+            const seenVerts = new Set();
+
+            for (let t = hitFace.startTriangle; t < hitFace.endTriangle; t++) {
+                for (let j = 0; j < 3; j++) {
+                    const idx = indices[t * 3 + j];
+                    facePositions.push(
+                        positions[idx * 3],
+                        positions[idx * 3 + 1],
+                        positions[idx * 3 + 2]
+                    );
+                    if (!seenVerts.has(idx)) {
+                        seenVerts.add(idx);
+                        allVertices.push(new THREE.Vector3(
+                            positions[idx * 3],
+                            positions[idx * 3 + 1],
+                            positions[idx * 3 + 2]
+                        ));
+                    }
+                }
+            }
+
+            faceResult = {
+                type: 'face',
+                index: hitFace.faceIndex,
+                data: {
+                    normal: new THREE.Vector3(hitFace.normal.x, hitFace.normal.y, hitFace.normal.z),
+                    faceId: `occt_face_${hitFace.faceIndex}`,
+                    faceIndex: hitFace.faceIndex,
+                    triangleIndices: Array.from(
+                        { length: hitFace.endTriangle - hitFace.startTriangle },
+                        (_, i) => hitFace.startTriangle + i
+                    ),
+                    facePositions: new Float32Array(facePositions),
+                    allVertices
+                }
+            };
+        }
+    }
+
     // --- VERTEX proximity (highest priority) ---
     if (vertexMap && vertexMap.length > 0) {
         let closestVertex = null;
@@ -72,7 +130,8 @@ function detectSubElementFromTessellation(hitInfo, screenPoint, camera, containe
                         closestVertex.position.y,
                         closestVertex.position.z
                     )
-                }
+                },
+                faceResult
             };
         }
     }
@@ -85,7 +144,6 @@ function detectSubElementFromTessellation(hitInfo, screenPoint, camera, containe
         for (const edge of edgeMap) {
             if (edge.vertices.length < 2) continue;
 
-            // Check distance to each segment of the polyline
             for (let i = 0; i < edge.vertices.length - 1; i++) {
                 const v1 = new THREE.Vector3(edge.vertices[i].x, edge.vertices[i].y, edge.vertices[i].z);
                 const v2 = new THREE.Vector3(edge.vertices[i + 1].x, edge.vertices[i + 1].y, edge.vertices[i + 1].z);
@@ -110,72 +168,22 @@ function detectSubElementFromTessellation(hitInfo, screenPoint, camera, containe
                     startVertex: new THREE.Vector3(startV.x, startV.y, startV.z),
                     endVertex: new THREE.Vector3(endV.x, endV.y, endV.z),
                     polylineVertices: closestEdge.vertices
-                }
+                },
+                faceResult
             };
         }
     }
 
-    // --- FACE detection via faceMap ---
+    // --- No nearby vertex/edge: return face result directly ---
+    if (faceResult) {
+        return faceResult;
+    }
+
+    // Final fallback — log when we have faceMap but couldn't match
     if (faceMap && faceMap.length > 0) {
-        // The hit triangle index tells us which face we're on
-        const hitTriIndex = hitInfo.faceIndex;
-        let hitFace = null;
-
-        for (const fm of faceMap) {
-            if (hitTriIndex >= fm.startTriangle && hitTriIndex < fm.endTriangle) {
-                hitFace = fm;
-                break;
-            }
-        }
-
-        if (hitFace) {
-            const positions = tessellation.positions;
-            const indices = tessellation.indices;
-
-            // Build actual triangle positions for exact highlight rendering
-            // (handles non-convex faces and faces with holes correctly)
-            const facePositions = [];
-            const allVertices = [];
-            const seenVerts = new Set();
-
-            for (let t = hitFace.startTriangle; t < hitFace.endTriangle; t++) {
-                for (let j = 0; j < 3; j++) {
-                    const idx = indices[t * 3 + j];
-                    facePositions.push(
-                        positions[idx * 3],
-                        positions[idx * 3 + 1],
-                        positions[idx * 3 + 2]
-                    );
-                    if (!seenVerts.has(idx)) {
-                        seenVerts.add(idx);
-                        allVertices.push(new THREE.Vector3(
-                            positions[idx * 3],
-                            positions[idx * 3 + 1],
-                            positions[idx * 3 + 2]
-                        ));
-                    }
-                }
-            }
-
-            return {
-                type: 'face',
-                index: hitFace.faceIndex,
-                data: {
-                    normal: new THREE.Vector3(hitFace.normal.x, hitFace.normal.y, hitFace.normal.z),
-                    faceId: `occt_face_${hitFace.faceIndex}`,
-                    faceIndex: hitFace.faceIndex,
-                    triangleIndices: Array.from(
-                        { length: hitFace.endTriangle - hitFace.startTriangle },
-                        (_, i) => hitFace.startTriangle + i
-                    ),
-                    facePositions: new Float32Array(facePositions),
-                    allVertices
-                }
-            };
-        }
+        console.warn(`bodyHitTest: hitTriIndex=${hitInfo.faceIndex} didn't match any faceMap entry. faceMap ranges:`,
+            faceMap.map(f => `face${f.faceIndex}:[${f.startTriangle},${f.endTriangle})`));
     }
-
-    // Final fallback
     return { type: null, index: null, data: null };
 }
 

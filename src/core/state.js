@@ -166,16 +166,16 @@ export function clearSelection() {
  * @param {*} subElementIndex - Index/key of sub-element (face index, edge key, vertex index)
  * @param {Object} subElementData - Additional data (normal, positions, etc.)
  */
-export function setBodySelection(type, bodyId, subElementIndex = null, subElementData = null) {
-    state.interaction.bodySelection = { type, bodyId, subElementIndex, subElementData };
+export function setBodySelection(type, bodyId, subElementIndex = null, subElementData = null, faceResult = null) {
+    state.interaction.bodySelection = { type, bodyId, subElementIndex, subElementData, faceResult };
     notify('interaction.bodySelection');
 }
 
 /**
  * Set body hover state
  */
-export function setBodyHover(type, bodyId, subElementIndex = null, subElementData = null) {
-    state.interaction.bodyHover = { type, bodyId, subElementIndex, subElementData };
+export function setBodyHover(type, bodyId, subElementIndex = null, subElementData = null, faceResult = null) {
+    state.interaction.bodyHover = { type, bodyId, subElementIndex, subElementData, faceResult };
     notify('interaction.bodyHover');
 }
 
@@ -198,7 +198,7 @@ export function getBodyHover() {
  */
 export function clearBodySelection() {
     state.interaction.bodySelection = {
-        type: null, bodyId: null, subElementIndex: null, subElementData: null
+        type: null, bodyId: null, subElementIndex: null, subElementData: null, faceResult: null
     };
     notify('interaction.bodySelection');
 }
@@ -208,7 +208,7 @@ export function clearBodySelection() {
  */
 export function clearBodyHover() {
     state.interaction.bodyHover = {
-        type: null, bodyId: null, subElementIndex: null, subElementData: null
+        type: null, bodyId: null, subElementIndex: null, subElementData: null, faceResult: null
     };
     notify('interaction.bodyHover');
 }
