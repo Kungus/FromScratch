@@ -1,247 +1,171 @@
 # FromScratch Architecture Memory
 
-## Key Verified Patterns (POC 4 Phase E)
+## Current Review Status (2026-02-08)
+**Latest Review:** Gizmo Mode, Context Widget, Translation System
+**Result:** PASS — All architectural rules compliant
+**Files reviewed:** gizmoMode.js, translateSubElementMode.js, gizmoRender.js, contextWidget.js, bodyOperations.js (translate functions)
 
-### Layer Boundaries - VERIFIED COMPLIANT
-- **core/occtEngine.js**: Pure geometry layer, only imports `occtInit.js` (allowed same-layer dependency)
-- **tools/extrudeTool.js**: Tool layer, correctly imports from core → input → render (legal direction)
-- **render/bodyRender.js**: Render layer, only imports core (sketchPlane), no cross-layer violations
-- **main.js**: Wiring layer, legitimately imports from all layers (exception rule confirmed)
-- **input/pointer.js**: Input layer, fixed button check from `!== 2` to `!== 0` for left-click only
+See detailed review: `REVIEW_2026-02-08-GIZMO-CONTEXT-TRANSLATION.md`
 
-### State Management - VERIFIED COMPLIANT
-- userData storage pattern in bodyRender.js (lines 377, 401) is a **read-only cache**, not primary state
-- Primary geometry state lives in state.js (occtShapeRef, tessellation)
-- userData mirrors state for convenience in render layer only
-- No violations of "state as single source of truth"
+## Verified Architectural Patterns
 
-### Pure Functions - VERIFIED COMPLIANT
-- occtEngine.js: All OCCT functions remain pure (no THREE.js, no DOM, no side effects)
-- New `extrudeFaceAndCut()` mirrors `extrudeFaceAndFuse()` correctly
-- Both functions: extract wire → extrude → boolean op → cleanup
-- No new impurities introduced
+### Tool Interactive Mode Pattern (GOLD STANDARD)
+All interactive modes (`gizmoMode`, `translateSubElementMode`, `faceExtrudeMode`, `filletMode`, `chamferMode`, `booleanMode`, `moveBodyMode`) follow identical pattern:
+- `initXxxMode({ callback1, callback2, ... })` — dependency injection
+- `startXxxMode(...)` — register event listeners, initialize state
+- `endXxxMode()` — cleanup and dispatch fromscratch:modeend
+- `isXxxModeActive()` — query function
+- Dispatch `fromscratch:modestart` on entry (coordinates with contextWidget)
+- Store event cleanup functions in module scope
+- Use capture-phase listeners + stopImmediatePropagation() to block pointer.js
 
-### Tool Pattern - VERIFIED COMPLIANT
-- extrudeTool.js: Follows standard activate/deactivate, event subscription, cleanup pattern
-- New booleanCut import (line 14): correctly added alongside booleanFuse
-- Dimension input callback flow unchanged
-- Height sign handling (positive → fuse, negative → cut) localized to createBodyData()
+### Atomic Operation Pattern
+All operations in `bodyOperations.js` follow: OCCT → tessellate → validate → store → state update → mesh replace → selection clear
 
-### Preview Color Logic - VERIFIED COMPLIANT
-- bodyRender.js (line 144, 253): Red tint (0xe05555) applied when height < 0
-- Applied at THREE.js material level only (render decision, not state)
-- Math.abs() used for visual dimensions while preserving signed height for geometry
-- No render module mutation of state
+### Preview Strategies
+- **Cheap (visual only):** Body mesh repositioning (gizmoMode line 239-250)
+- **Medium (render):** Face extrusion using existing triangle subset (gizmoMode line 251-264)
+- **Expensive (OCCT):** Vertex/edge rebuild, 100ms debounced (gizmoMode line 266-272, translateSubElementMode line 319-330)
 
-### Face Extrusion Interactive Mode - VERIFIED COMPLIANT
-- main.js startFaceExtrudeMode/endFaceExtrudeMode: self-contained, clear event registration/cleanup
-- Uses capture-phase mousedown (line 746) to prevent tool conflicts
-- Branching logic in applyFaceExtrusion (line 570-573): `height >= 0` → fuse, else → cut
-- Math.abs() for dimension labels (line 697) while preserving signed geometry direction
+### Event Coordination
+- `fromscratch:modestart`: Dispatched by all modes on entry; contextWidget listens and hides
+- `fromscratch:settool`: Dispatched by tool switches; contextWidget listens and hides
+- `fromscratch:modeend`: Dispatched by all modes on exit (unused currently, but consistent)
 
-### Pointer Button Fix - VERIFIED COMPLIANT
-- pointer.js line 138, 148: Changed to `e.button !== 0` (was `!== 2`)
-- Effect: Only left-click (button 0) triggers tools
-- Middle-click (button 1) and right-click (button 2) pass through (camera/context menu)
-- Comment clarified (line 137)
+## Layer Boundaries - VERIFIED COMPLIANT (2026-02-08)
 
-## Critical Design Observations
-
-### Cut Extrusion Algorithm (Elegant)
-The negative height pattern is mathematically sound:
-1. User drags inward → negative NDC dot product → negative height
-2. `direction = normal * height` when height < 0 → direction points inward
-3. OCCT extrudeProfile creates solid inside parent body
-4. booleanCut(parent, interior_solid) removes material correctly
-5. No special inward-flip logic needed; geometry naturally carves
-
-### Three Boolean Paths Now Active
-- **Ground plane**: makeBox/makeCylinder (always positive)
-- **Face extrusion outward**: makeRectangleWire → extrudeProfile → booleanFuse
-- **Face extrusion inward**: makeRectangleWire → extrudeProfile → booleanCut
-All three paths correctly branch on height sign or plane type.
-
-### Math.abs() Usage Verified
-- Dimension display (main.js line 277, 697): Math.abs() for label only
-- Body preview (bodyRender.js line 189, 218, 120): Math.abs() for geometry dimensions only
-- Height preserved signed in tool state and commitData for geometry direction
-- No double-negation or sign ambiguity found
-
-## No Violations Found
-- Layer boundaries: COMPLIANT
-- Pure functions: COMPLIANT
-- State mutation: COMPLIANT
-- Tool pattern: COMPLIANT
-- OCCT boundaries: COMPLIANT
-- Preview/render decisions: COMPLIANT
-
-POC 4 Phase E passes full architectural review.
-
-## 2026-02-07: Refactoring Review — Main.js Extraction
-
-**Files Extracted:**
-- `src/core/bodyOperations.js` (NEW) — fillet + face extrusion operations
-- `src/tools/faceExtrudeMode.js` (NEW) — interactive face extrude mode
-- `src/tools/filletMode.js` (NEW) — interactive fillet mode
-- `src/ui/contextMenuBuilder.js` (NEW) — context menu item builder
-
-**Status: PASS with AMBER FLAG**
-
-**Findings:**
-
-1. **VIOLATION (Amber):** bodyOperations.js imports from render/ (replaceBodyMesh, updateSelectionHighlight)
-   - Core should never import from render
-   - Justification: OCCT ops must atomically sync state→mesh→selection
-   - Recommendation: Move to tools/ layer OR document as intentional exception
-
-2. **COMPLIANT:** faceExtrudeMode & filletMode follow tool pattern perfectly
-   - Self-contained state, proper cleanup, DI pattern for callbacks
-   - No circular imports, event listeners properly unsubscribed
-
-3. **COMPLIANT:** contextMenuBuilder is single-responsibility
-   - Pure item construction, zero render/state mutation
-   - DI pattern prevents circular imports
-
-4. **COMPLIANT:** Initialization order correct, no dependency ordering issues
-
-5. **COMPLIANT:** Geometry operations are pure; state/render sync is localized
-
-6. **CAUTION:** OCCT memory management works but watch for leaks on long sessions
-
-See detailed review: `REVIEW_REFACTOR_2026-02-07.md`
-
-## 2026-02-08: Context Widget System — IMPLEMENTATION COMPLETE & VERIFIED
-
-**Status: PASS — No architectural violations**
-
-**Implementation delivered:**
-- `src/ui/contextWidget.js` (NEW) — Floating action panel near selected sub-elements
-- `index.html` — CSS styles for widget components
-- `src/main.js` — Added initialization + hideWidget in onRestore callback
-- **6 mode files** — Added `fromscratch:modestart` event dispatch at mode start
-
-**Architecture verified:**
-
-1. **Layer Boundaries:** COMPLIANT
-   - contextWidget imports: state, input/camera, render, core/undoRedo, tools/sketchOnFaceTool
-   - All imports legal (no upward/cross-layer violations)
-   - UI layer correctly imports from view, state, input, tool layers
-
-2. **State Management:** COMPLIANT
-   - Subscribes to `state.interaction.bodySelection` changes
-   - Widget rebuilds from state, no local cache
-   - Delete action goes through proper state channel (removeBody)
-
-3. **One Module = One Thing:** COMPLIANT
-   - Single responsibility: "Display context-sensitive actions near selected sub-elements"
-   - Does NOT execute actions, only triggers injected callbacks (DI pattern)
-
-4. **Event Pattern:** NEW PATTERN ESTABLISHED
-   - `fromscratch:modestart` event dispatched at start of every interactive mode
-   - Widget listens and hides when any mode begins
-   - Follows existing `fromscratch:settool` event convention
-   - Decouples widget from mode implementation details
-
-5. **Dependency Injection:** CONSISTENT WITH PROJECT
-   - initContextWidget receives mode-starting callbacks
-   - Same pattern as contextMenuBuilder
-   - Avoids circular imports
-
-6. **Performance:** ACCEPTABLE
-   - Subscription fires once per selection change (user click)
-   - Screen positioning calculation is negligible (~5 vector ops)
-   - No geometry calculations
-
-**Integration points verified:**
-- State subscription → widget rebuild ✓
-- Mode start → widget hide (event-driven) ✓
-- Tool switch → widget hide (event-driven) ✓
-- Undo/redo → widget hide (callback in onRestore) ✓
-- Multi-select → widget labels update ("Fillet 3") ✓
-
-**Risks identified & mitigated:**
-- Widget updates during mode (safe — widget hidden during modes)
-- Missing event dispatch in new mode (pattern established; code review catches)
-- Stale mode callbacks (DI pattern decouples; signatures stable)
-- Performance overhead (negligible — single vector math per selection)
-
-**New UI→Tools delegation pattern established:**
+### Dependency Direction Rules (STRICT)
 ```
-contextWidget (UI) → DI callbacks → interactive modes (Tools)
+input/ → tools/ → core/ ← render/ ← ui/
+        ↓
+      ui/
 ```
-Reusable pattern for future UI panels (toolbar, side panel, etc.)
 
-See detailed review: `REVIEW_CONTEXT_WIDGET_2026-02-08.md`
+**Verified in latest review:**
+- gizmoMode.js (tools): imports core→input→render→ui ✓
+- translateSubElementMode.js (tools): imports core→input→render→ui ✓
+- gizmoRender.js (render): imports THREE.js + input/camera only ✓
+- contextWidget.js (ui): imports all layers except body tools ✓
+- bodyOperations.js (tools): imports core + render (DOCUMENTED EXCEPTION for atomic sync) ✓
 
-## 2026-02-08: Gizmo Mode System — FULL IMPLEMENTATION REVIEW
+### Known Exceptions (Intentional)
+- `bodyOperations.js` imports from `render/` (replaceBodyMesh, updateSelectionHighlight, removeBodyMesh) — justified for atomic state→mesh→selection sync
+- `contextWidget.js` imports from `tools/sketchOnFaceTool` — UI can invoke tool entry points
 
-**Status: PASS with DOCUMENTED EXCEPTION**
+## State Management - VERIFIED COMPLIANT
 
-**Files Added:**
-- `src/tools/gizmoMode.js` (NEW, 436 lines) — Interactive drag-on-axis state machine
-- `src/render/gizmoRender.js` (NEW, 182 lines) — 3-axis translation gizmo visual
-- `src/core/occtEngine.js` (modified) — Added `getFaceVertexPositions()` pure function
-- `src/tools/bodyOperations.js` (modified) — Added `applyTranslateFace()` operation
-- `src/main.js` (modified) — Gizmo initialization, wiring, event handling
+### Single Source of Truth
+- All geometry state lives in `state.js` (bodies, sketches, selections)
+- No duplicate geometry caches in render or tool modules
+- Preview states are local to interactive modes (not written to state.js)
+- OCCT shapes stored separately in `occtShapeStore.js` (reference-counted)
 
-**Architecture Verified:**
+### State Update Pattern
+Interactive modes → DI callback → bodyOperations → pushUndoSnapshot + OCCT op + state.updateBody + mesh replace
 
-1. **Layer Boundaries:** PASS
-   - gizmoMode.js (tools/): imports core→input→render (legal)
-   - gizmoRender.js (render/): imports only THREE.js + input/camera (pure)
-   - EXCEPTION (intentional): bodyOperations.js imports render for atomic state→mesh→selection sync
-   - Exception documented and justified; see REVIEW_GIZMO_2026-02-08.md
+## Pure Function Boundaries
 
-2. **Pure Functions:** PASS
-   - getFaceVertexPositions(shape, faceIndex) returns plain object array
-   - No THREE.js, DOM, state mutations in core/occtEngine additions
+### Core Layer Purity (VERIFIED)
+- `occtEngine.js`: All functions pure (no THREE.js, no DOM, no state mutation)
+- `occtTessellate.js`: Pure (input shape → output tessellation data)
+- `snap.js`: Pure (coordinates → snapped coordinates)
+- `sketchPlane.js`: Pure (plane + coords ↔ transforms)
 
-3. **Single Responsibility:** PASS
-   - gizmoRender: "Render 3-axis gizmo" (visual only)
-   - gizmoMode: "Interactive drag-on-axis state machine" (input→preview→commit)
-   - applyTranslateFace: "Translate face vertices" (operation in bodyOperations)
+### Tool Layer (VERIFIED)
+- No OCCT imports except through `occtEngine.js` and `occtShapeStore.js`
+- No direct state mutations (use callbacks or pushUndoSnapshot pattern)
+- Preview calculations may create temporary THREE.js meshes (acceptable)
 
-4. **Tool Pattern:** EXCELLENT
-   - initGizmoMode(callbacks) / startGizmoMode / endGizmoMode / isGizmoModeActive
-   - DI callbacks injected at init (lines 49-54)
-   - Event subscription/cleanup via mode.cleanup function (lines 334-339)
-   - Capture-phase mousedown prevents tool conflicts (line 330)
-   - No state.js writes — results via DI callbacks only
+## UI Patterns
 
-5. **OCCT Boundaries:** PASS
-   - Only core/occtEngine exposes OCCT functions
-   - gizmoMode calls pure functions: getEdgeEndpoints, getVertexPosition, getFaceVertexPositions, rebuildShapeWithMovedVertices
-   - All data passed is plain objects (no OCCT objects leak to tools)
+### Context Widget Pattern (NEW)
+- Subscribes to `state.interaction.bodySelection` changes
+- Rebuilds widget from state, no local cache
+- Injects DI callbacks to start interactive modes
+- Hides on `fromscratch:modestart` event
+- Hides on `fromscratch:settool` event
 
-6. **State Management:** PASS
-   - gizmoMode is entirely self-contained (mode object, lines 23-38)
-   - No intermediate state written to state.js
-   - Results committed via bodyOperations which handles atomic state→render→selection sync
+### Status Banner Pattern (ESTABLISHED)
+- Status messages created/removed directly in tool modules
+- Positioned at top-center of viewport
+- ID-based for easy find-and-remove
+- Matches existing modes (faceExtrudeMode, filletMode, etc.)
 
-7. **Integration:** COMPLETE
-   - initGizmo(scene) at main.js:191 (correct order)
-   - initGizmoMode DI at main.js:111
-   - Undo cleanup at main.js:124
-   - Hide on modestart (line 526)
-   - Show on selection change (lines 530-543)
-   - Hover highlight (lines 546-568)
-   - Mousedown intercept (lines 571-603)
-   - Scale update per frame (line 702)
+## Known Limitations (By Design)
 
-**Mathematical Quality:** Excellent
-- Screen-space projection (lines 59-71): normalizes correctly
-- Axis drag via dot product (lines 213-227): sound
-- Grid snap: projects to scalar, snaps, converts back (lines 223-226)
-- Face extrusion: accounts for normal sign (lines 248-252)
+### Vertex/Edge Movement
+- Only works on planar faces with straight edges
+- Curved edges (from fillet/chamfer) explicitly rejected
+- Error message shown to user: `"Cannot move: [specific reason]"`
 
-**Key Design Decisions:**
-- Geometry offsets baked into BufferGeometry via .translate() (gizmoRender.js:72,78,90) before rotation — avoids parent-space issues
-- Cheap preview for body move (mesh position), expensive preview for sub-elements (OCCT rebuild, debounced 100ms)
-- Face normal alignment check: if dot(normal, axis) > 0.9, delegate to applyFaceExtrusion; else call applyTranslateFace
+### Gizmo Visualization
+- Only visible on body/face/edge/vertex selection
+- Hidden when interactive modes start
+- Camera-distance scaled for constant screen size
+- 3 colored arrows (X=red, Y=green, Z=blue)
 
-**Known Limitations (intentional):**
-- Only works on planar faces with straight edges (rebuildShapeWithMovedVertices checks GeomAbs_Line, line 630)
-- Curved edges (fillet/chamfer) explicitly rejected (line 634)
-- Detects and rejects; provides clear error message
+## Common Gotchas (Lessons Learned)
 
-See detailed review: `REVIEW_GIZMO_2026-02-08.md`
+### OCCT Constructor Overloads
+- `BRepBuilderAPI_MakeSolid_2` = CompSolid (NOT Shell)
+- `BRepBuilderAPI_MakeSolid_3` = Shell (correct for shell→solid)
+- `BRepBuilderAPI_MakeEdge_2(v1, v2)` = from TopoDS_Vertex pair
+- `BRepBuilderAPI_MakeEdge_3(p1, p2)` = from gp_Pnt pair
+
+### THREE.js Camera
+- `camera.domElement` doesn't exist; use `document.getElementById('canvas-container')`
+- `camera.getWorldDirection()` returns unit vector in world space
+
+### Event Interception
+- `stopPropagation()` alone doesn't block other handlers on same element
+- Use `stopImmediatePropagation()` to block sibling listeners
+- Capture-phase (`{ capture: true }`) + `stopImmediatePropagation()` blocks everything downstream
+
+### DOM Element Positioning
+- NDC projection: `camera.project(vec3)` returns {x: -1..+1, y: -1..+1}
+- Screen coords: `x = (ndc.x + 1) / 2 * width`, `y = (1 - ndc.y) / 2 * height`
+- Clamp to viewport to prevent off-screen panels
+
+## Testing Recommendations
+
+### For Vertex/Edge Translation
+1. Box → move edge → expect box deforms
+2. Box → fillet → move vertex on curved face (expect error)
+3. Box → move vertex → exact distance input via D key
+4. Axis constraint X/Y/Z keys on vertex mode
+
+### For Gizmo
+1. Body selection → gizmo appears
+2. Hover arrow → brightens
+3. Drag on X/Y/Z axis → previews move
+4. Release → commits to state
+5. Undo (Ctrl+Z) → reverts to original position
+6. Other mode starts → gizmo hides
+
+### For Context Widget
+1. Face selection → widget shows "Extrude Face", "Sketch on Face"
+2. Edge selection → widget shows "Move Edge", "Fillet N", "Chamfer N"
+3. Vertex selection → widget shows "Move Vertex"
+4. Body selection → widget shows "Move", "Subtract...", "Union...", "Delete"
+5. Interactive mode starts → widget hides
+6. Tool switch → widget hides
+
+## Code Health Notes
+
+### Performance
+- Gizmo scale updated every frame (acceptable, one Vector3 distance call)
+- Preview OCCT rebuilds debounced at 100ms (necessary for interactivity)
+- Context widget repositioning negligible (~5 vector operations per selection change)
+
+### Memory
+- OCCT shapes reference-counted and cleaned up properly
+- DOM status banners removed in endMode() functions
+- THREE.js geometries and materials disposed in clearBodyPreview()
+- Event listeners stored and removed in cleanup functions
+
+### Code Organization
+- gizmoMode + gizmoRender properly split (state machine vs. visual)
+- translateSubElementMode self-contained with minimal render dependencies
+- bodyOperations.js functions each handle complete atomic operation
+- contextWidget.js single responsibility (display actions)
+

@@ -257,6 +257,13 @@ export function applyFaceExtrusion(bodyId, faceIndex, normal, height) {
         }
         const tessellation = tessellateShape(resultShape);
 
+        const check = validateTessellation(tessellation, body.tessellation);
+        if (!check.valid) {
+            console.warn(`Face extrusion produced corrupt geometry (${check.reason}) — rejecting`);
+            resultShape.delete();
+            return;
+        }
+
         const oldShapeRef = body.occtShapeRef;
         const newShapeRef = storeShape(resultShape);
 
@@ -417,6 +424,13 @@ export function applyTranslateSubElement(bodyId, elementType, elementData, delta
         console.log('applyTranslateSubElement: OCCT rebuild succeeded, tessellating...');
         const tessellation = tessellateShape(newShape);
 
+        const check = validateTessellation(tessellation, body.tessellation);
+        if (!check.valid) {
+            console.warn(`Sub-element translation produced corrupt geometry (${check.reason}) — rejecting`);
+            newShape.delete();
+            return;
+        }
+
         const oldShapeRef = body.occtShapeRef;
         const newShapeRef = storeShape(newShape);
 
@@ -526,6 +540,13 @@ export function applyTranslateFace(bodyId, faceIndex, delta) {
 
         const newShape = rebuildShapeWithMovedVertices(shape, vertexMoves);
         const tessellation = tessellateShape(newShape);
+
+        const check = validateTessellation(tessellation, body.tessellation);
+        if (!check.valid) {
+            console.warn(`Face translation produced corrupt geometry (${check.reason}) — rejecting`);
+            newShape.delete();
+            return;
+        }
 
         const oldShapeRef = body.occtShapeRef;
         const newShapeRef = storeShape(newShape);

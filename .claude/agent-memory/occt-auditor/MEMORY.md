@@ -1,8 +1,24 @@
 # OCCT Auditor Memory
 
+## Latest Audit: 2026-02-08 ❌ 2 CRITICAL LEAKS IN NEW CODE
+**Files:** occtEngine.js (rebuildShapeWithMovedVertices refactor), bodyOperations.js, gizmoMode.js, translateSubElementMode.js
+**Scope:** Focused audit of rewritten `_sewFacesIntoSolid()`, `_validateShape()`, `_buildPreservingOriginals()`
+**Result:** 2 critical memory leaks in new helper functions, 2 warnings
+**Details:** See `audit-2026-02-08-rebuild.md`
+
+**CRITICAL ISSUES FOUND:**
+1. `TopoDS_Shell` wrapper leak in BRep_Builder fallback path (line 938)
+2. `TopoDS_Shell` downcast wrapper leak in compound extraction (line 988)
+
+**WARNINGS:**
+1. Preserved face cleanup ambiguity (line 1092)
+2. Complex conditional cleanup logic in shellForSolid (lines 1015-1021)
+
+**Previous HIGH RISK patterns (inline builders) have all been FIXED.**
+
 ## Key Findings from Recent Audits
 
-### Inline Builder Leak Pattern (HIGH RISK) — NEW 2026-02-08
+### Inline Builder Leak Pattern (HIGH RISK) — FIXED 2026-02-08
 **Pattern:** `new oc.BRepBuilderAPI_MakeSomething(...).ResultMethod()` creates a builder object that is NEVER deleted.
 
 **Common mistake:**
@@ -13,9 +29,7 @@ const edge = new oc.BRepBuilderAPI_MakeEdge_3(p1, p2).Edge();
 
 **Why it leaks:** The builder object is created, the result is extracted via `.Edge()` or `.Shape()`, but the builder wrapper itself still exists in WASM memory and must be explicitly deleted.
 
-**Found in:**
-- `makeRectangleWire()` — lines 125-128 (4 leaks per call)
-- `makeCircleWire()` — line 168 (1 leak per call)
+**Status:** ✅ **FIXED** — All instances now use extract-and-delete pattern (verified 2026-02-08)
 
 **Safe pattern:**
 ```javascript
@@ -26,7 +40,7 @@ builder.delete();  // ✓ Cleanup
 
 ---
 
-### Wire Reference Leak Pattern (HIGH RISK)
+### Wire Reference Leak Pattern (HIGH RISK) — FIXED 2026-02-07
 **Pattern:** `oc.TopoDS.Wire_1(explorer.Current())` creates a **new wrapper object** that MUST be deleted.
 
 **Common mistake:**
@@ -39,9 +53,7 @@ wireExplorer.delete();
 
 **Why it leaks:** Even though `TopoDS.Wire_1()` is a downcast that references existing geometry, opencascade.js creates a **new Emscripten binding wrapper** that requires explicit cleanup.
 
-**Found in:**
-- `extrudeFaceAndFuse()` — line 312 (FIXED in audit 2026-02-07)
-- `extrudeFaceAndCut()` — line 360 (FIXED in audit 2026-02-07)
+**Status:** ✅ **FIXED** — All downcast results properly deleted (verified 2026-02-08)
 
 **Fix:** Always delete downcast results: `wire.delete()`, `edge.delete()`, `face.delete()`, etc.
 

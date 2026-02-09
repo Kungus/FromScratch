@@ -402,7 +402,7 @@ User Input → Tool → State → Render
 - `src/ui/contextWidget.js` — Floating action panel near selected sub-elements (Extrude Face, Fillet Edge, Move Edge, etc.)
 
 **Modified modules:**
-- `src/core/occtEngine.js` — Major rewrite of `rebuildShapeWithMovedVertices()`: preserves original faces/edges when their vertices aren't moved, replaced unavailable `BRepBuilderAPI_Sewing` with `BRep_Builder` + `TopoDS_Shell`, added `getFaceVertexPositions()`
+- `src/core/occtEngine.js` — Major rewrite of `rebuildShapeWithMovedVertices()`: preserves original faces/edges when their vertices aren't moved, uses `BRepBuilderAPI_Sewing` + `ShapeFix_Shape` + `BRepCheck_Analyzer` for proper topology, added `getFaceVertexPositions()`, `countTopologyElements()`
 - `src/tools/bodyOperations.js` — Added `applyTranslateFace()` for face vertex translation, diagnostic logging
 - `src/ui/contextMenuBuilder.js` — Uses `showMoveGizmo` instead of old mode starters
 - `src/main.js` — Wires gizmo render/mode, context widget, mode coordination via `fromscratch:modestart`/`modeend` events
@@ -432,7 +432,7 @@ User Input → Tool → State → Render
 **Bugs fixed:**
 - `rebuildShapeWithMovedVertices` double-delete of TopoDS_Edge (curved-edge check deleted edge, then catch block deleted again)
 - `rebuildShapeWithMovedVertices` rejected entire shapes with ANY curved edges — now preserves unmoved faces/edges
-- `BRepBuilderAPI_Sewing` not available in OCCT.js WASM build — replaced with `BRep_Builder` + `TopoDS_Shell`
+- `BRepBuilderAPI_Sewing` IS available (requires all 5 constructor params in JS binding) — now used for proper topology rebuild
 - Wire leak on MakeFace exception — fixed with `finally` block
 - Selection highlights masking OCCT preview during drag — cleared on `fromscratch:modestart`
 
