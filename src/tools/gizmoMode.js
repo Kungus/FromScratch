@@ -2,17 +2,22 @@
  * Gizmo Mode — Interactive drag-on-axis state machine.
  * Activated when user mousedowns on a gizmo arrow.
  * Handles body, vertex, edge, and face translation along the constrained axis.
+ *
+ * For body moves: after commit, gizmo re-appears at the new position so the user
+ * can drag another axis without re-entering move mode (Shapr3D-style).
+ * For sub-element moves: fully exits after commit (topology may change).
  */
 
 import * as THREE from 'three';
 import { getCamera } from '../input/camera.js';
-import { getBodyById } from '../core/state.js';
+import { getBodyById, setBodySelection } from '../core/state.js';
 import { getShape } from '../core/occtShapeStore.js';
 import { getEdgeEndpoints, getVertexPosition, getFaceVertexPositions, rebuildShapeWithMovedVertices } from '../core/occtEngine.js';
 import { tessellateShape } from '../core/occtTessellate.js';
 import { showDimensions, hideDimensions } from '../render/dimensionRender.js';
 import { showDimensionInput, hideInput } from '../ui/dimensionInput.js';
-import { updateTessellationPreview, updateFaceExtrudePreview, clearBodyPreview, getBodyGroup } from '../render/bodyRender.js';
+import { updateTessellationPreview, updateFaceExtrudePreview, clearBodyPreview, getBodyGroup, hideBodyMesh, showBodyMesh } from '../render/bodyRender.js';
+import { showGizmo } from '../render/gizmoRender.js';
 import { snapToGrid } from '../core/snap.js';
 
 let _applyMoveBody = null;
@@ -123,6 +128,7 @@ function tryRebuildPreview() {
         newShape.delete();
 
         mode.lastPreviewDelta = mode.delta;
+        hideBodyMesh(mode.bodyId);
         updateTessellationPreview(tessellation);
     } catch (e) {
         console.warn('Gizmo preview error:', e.message || e);
@@ -291,7 +297,7 @@ export function startGizmoMode(axis, selectionInfo) {
         console.log(`Gizmo mouseup: delta=${mode.delta.toFixed(3)}, active=${mode.active}`);
         e.stopImmediatePropagation();
         e.preventDefault();
-        commitAndEnd();
+        commitDrag();
     };
 
     // Also intercept mousedown during gizmo mode to prevent bodySelectTool
@@ -315,21 +321,21 @@ export function startGizmoMode(axis, selectionInfo) {
                 (dimensions) => {
                     const val = dimensions.width || dimensions.height || 0;
                     if (Math.abs(val) < 0.001) {
-                        endGizmoMode();
+                        cancelDrag();
                         return;
                     }
                     // Apply along current axis with current direction sign
                     const sign = mode.delta >= 0 ? 1 : -1;
                     mode.delta = val * sign;
-                    commitAndEnd();
+                    commitDrag();
                 },
-                () => { endGizmoMode(); },
+                () => { cancelDrag(); },
                 initialVal
             );
         } else if (e.key === 'Escape') {
             e.preventDefault();
             e.stopPropagation();
-            endGizmoMode();
+            cancelDrag();
         }
     };
 
@@ -347,55 +353,155 @@ export function startGizmoMode(axis, selectionInfo) {
 }
 
 /**
- * Commit the current delta and end mode.
+ * Commit the current drag delta.
+ * For body moves: commits and re-shows gizmo at new position (persistent mode).
+ * For sub-element moves: commits and fully exits (topology may change).
  */
-function commitAndEnd() {
+function commitDrag() {
     const absDelta = Math.abs(mode.delta);
-    if (absDelta < 0.01) {
-        endGizmoMode();
-        return;
-    }
+    const bodyId = mode.bodyId;
+    const selType = mode.selectionType;
 
-    const dv = getDeltaVec();
-    console.log(`Gizmo commit: type=${mode.selectionType}, axis=${mode.axis}, delta=${mode.delta.toFixed(3)}, dv=(${dv.x.toFixed(3)},${dv.y.toFixed(3)},${dv.z.toFixed(3)}), bodyId=${mode.bodyId}, edgeIndex=${mode.elementData?.edgeIndex}, vertexIndex=${mode.elementData?.vertexIndex}`);
+    if (absDelta >= 0.01) {
+        const dv = getDeltaVec();
+        console.log(`Gizmo commit: type=${selType}, axis=${mode.axis}, delta=${mode.delta.toFixed(3)}, dv=(${dv.x.toFixed(3)},${dv.y.toFixed(3)},${dv.z.toFixed(3)}), bodyId=${bodyId}`);
 
-    try {
-        if (mode.selectionType === 'body') {
-            // Reset mesh position before OCCT commit
-            if (mode.initialGroupPos) {
-                const bodyGroup = getBodyGroup();
-                const meshGroup = bodyGroup.getObjectByName(mode.bodyId);
-                if (meshGroup) {
-                    meshGroup.position.set(
-                        mode.initialGroupPos.x,
-                        mode.initialGroupPos.y,
-                        mode.initialGroupPos.z
-                    );
+        try {
+            if (selType === 'body') {
+                // Reset mesh position before OCCT commit (applyMoveBody replaces mesh)
+                if (mode.initialGroupPos) {
+                    const bodyGroup = getBodyGroup();
+                    const meshGroup = bodyGroup.getObjectByName(bodyId);
+                    if (meshGroup) {
+                        meshGroup.position.set(
+                            mode.initialGroupPos.x,
+                            mode.initialGroupPos.y,
+                            mode.initialGroupPos.z
+                        );
+                    }
                 }
+                _applyMoveBody(bodyId, dv.x, dv.y, dv.z);
+            } else if (selType === 'face' && mode.faceIsNormalAligned) {
+                // Face extrusion: compute height along normal
+                const n = mode.elementData.normal;
+                const height = dv.x * n.x + dv.y * n.y + dv.z * n.z;
+                _applyFaceExtrusion(bodyId, mode.elementData.faceIndex, n, height);
+            } else if (selType === 'face') {
+                _applyTranslateFace(bodyId, mode.elementData.faceIndex, dv);
+            } else if (selType === 'edge') {
+                _applyTranslateSubElement(bodyId, 'edge', mode.elementData, dv);
+            } else if (selType === 'vertex') {
+                _applyTranslateSubElement(bodyId, 'vertex', mode.elementData, dv);
             }
-            _applyMoveBody(mode.bodyId, dv.x, dv.y, dv.z);
-        } else if (mode.selectionType === 'face' && mode.faceIsNormalAligned) {
-            // Face extrusion: compute height along normal
-            const n = mode.elementData.normal;
-            const height = dv.x * n.x + dv.y * n.y + dv.z * n.z;
-            _applyFaceExtrusion(mode.bodyId, mode.elementData.faceIndex, n, height);
-        } else if (mode.selectionType === 'face') {
-            _applyTranslateFace(mode.bodyId, mode.elementData.faceIndex, dv);
-        } else if (mode.selectionType === 'edge') {
-            _applyTranslateSubElement(mode.bodyId, 'edge', mode.elementData, dv);
-        } else if (mode.selectionType === 'vertex') {
-            _applyTranslateSubElement(mode.bodyId, 'vertex', mode.elementData, dv);
+            console.log('Gizmo commit succeeded');
+        } catch (e) {
+            console.error('Gizmo commit failed:', e.message || e);
         }
-        console.log('Gizmo commit succeeded');
-    } catch (e) {
-        console.error('Gizmo commit failed:', e.message || e);
     }
 
-    endGizmoMode();
+    // Body moves: return to gizmo-idle (re-show gizmo for continued placement)
+    // Sub-element moves: fully exit (OCCT rebuild may change topology indices)
+    if (selType === 'body') {
+        returnToGizmoIdle(bodyId);
+    } else {
+        endGizmoMode();
+    }
 }
 
 /**
- * End gizmo mode and clean up.
+ * Cancel the current drag without committing.
+ * For body moves: returns to gizmo-idle.
+ * For sub-element moves: fully exits.
+ */
+function cancelDrag() {
+    const bodyId = mode.bodyId;
+    const selType = mode.selectionType;
+
+    if (selType === 'body') {
+        returnToGizmoIdle(bodyId);
+    } else {
+        endGizmoMode();
+    }
+}
+
+/**
+ * Clean up drag state and re-show gizmo at the body's current position.
+ * Returns to the "gizmo visible, waiting for axis click" state.
+ */
+function returnToGizmoIdle(bodyId) {
+    if (!mode.active) return;
+
+    if (mode.cleanup) mode.cleanup();
+    if (mode.debounceTimer) clearTimeout(mode.debounceTimer);
+
+    // Reset body mesh preview position (needed if drag was canceled or delta was tiny)
+    if (mode.selectionType === 'body' && mode.initialGroupPos) {
+        const bodyGroup = getBodyGroup();
+        const meshGroup = bodyGroup.getObjectByName(mode.bodyId);
+        if (meshGroup) {
+            meshGroup.position.set(
+                mode.initialGroupPos.x,
+                mode.initialGroupPos.y,
+                mode.initialGroupPos.z
+            );
+        }
+    }
+
+    if (mode.bodyId) showBodyMesh(mode.bodyId);
+    clearBodyPreview();
+    hideDimensions();
+    hideInput();
+
+    const container = document.getElementById('canvas-container');
+    if (container) container.style.cursor = '';
+
+    const statusEl = document.getElementById('gizmo-mode-status');
+    if (statusEl) statusEl.remove();
+
+    // Fire modeend so main.js hover/click handlers re-enable
+    window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
+
+    // Reset all mode state (main.js rebuilds selectionInfo from getBodySelection on next click)
+    mode.active = false;
+    mode.axis = null;
+    mode.selectionType = null;
+    mode.bodyId = null;
+    mode.elementData = null;
+    mode.faceIsNormalAligned = false;
+    mode.startScreenPos = null;
+    mode.screenAxisDir = null;
+    mode.worldOrigin = null;
+    mode.delta = 0;
+    mode.lastPreviewDelta = null;
+    mode.initialGroupPos = null;
+    mode.cleanup = null;
+
+    // Re-show gizmo at the body's current position and restore selection
+    // (applyMoveBody clears body selection, but we need it for the next arrow click)
+    reShowGizmoAtBody(bodyId);
+    setBodySelection('body', bodyId, null, null);
+}
+
+/**
+ * Compute body centroid from tessellation and show gizmo there.
+ */
+function reShowGizmoAtBody(bodyId) {
+    if (!bodyId) return;
+    const body = getBodyById(bodyId);
+    if (!body?.tessellation?.positions) return;
+
+    const pos = body.tessellation.positions;
+    let cx = 0, cy = 0, cz = 0;
+    const count = pos.length / 3;
+    for (let i = 0; i < count; i++) {
+        cx += pos[i * 3]; cy += pos[i * 3 + 1]; cz += pos[i * 3 + 2];
+    }
+    showGizmo(new THREE.Vector3(cx / count, cy / count, cz / count));
+}
+
+/**
+ * End gizmo mode and clean up completely. Used by external callers
+ * (undo/redo, mode coordination) and for sub-element move exits.
  */
 export function endGizmoMode() {
     if (!mode.active) return;
@@ -423,6 +529,7 @@ export function endGizmoMode() {
     const statusEl = document.getElementById('gizmo-mode-status');
     if (statusEl) statusEl.remove();
 
+    if (mode.bodyId) showBodyMesh(mode.bodyId);
     clearBodyPreview();
     hideDimensions();
     hideInput();

@@ -109,6 +109,13 @@ export function buildContextMenuItems(target, containerEl) {
     if (target.type === 'edge' && target.bodyId) {
         const multiSel = getBodyMultiSelection();
         const edgeCount = multiSel.length > 0 ? multiSel.length : 1;
+        // Compute edge midpoint for spatial label positioning
+        const sv = target.subElementData?.startVertex, ev = target.subElementData?.endVertex;
+        const edgeMidpoint = (sv && ev) ? {
+            x: (sv.x + ev.x) / 2,
+            y: (sv.y + ev.y) / 2,
+            z: (sv.z + ev.z) / 2
+        } : null;
         items.push({
             label: edgeCount > 1 ? `Fillet ${edgeCount} Edges` : 'Fillet Edge',
             icon: '\u25EF',
@@ -133,7 +140,7 @@ export function buildContextMenuItems(target, containerEl) {
                     console.warn('No valid edge indices for fillet');
                     return;
                 }
-                _startFilletMode(bodyId, edgeIndices);
+                _startFilletMode(bodyId, edgeIndices, edgeMidpoint);
             }
         });
         items.push({
@@ -159,7 +166,7 @@ export function buildContextMenuItems(target, containerEl) {
                     console.warn('No valid edge indices for chamfer');
                     return;
                 }
-                _startChamferMode(bodyId, edgeIndices);
+                _startChamferMode(bodyId, edgeIndices, edgeMidpoint);
             }
         });
         items.push({

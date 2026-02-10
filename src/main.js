@@ -87,6 +87,7 @@ import { initContextMenuBuilder, buildContextMenuItems } from './ui/contextMenuB
 import { initContextWidget, hideWidget } from './ui/contextWidget.js';
 import { initGizmo, showGizmo, hideGizmo, updateGizmoScale, getGizmoHitMeshes, highlightGizmoAxis, isGizmoVisible } from './render/gizmoRender.js';
 import { initGizmoMode, startGizmoMode, endGizmoMode, isGizmoModeActive } from './tools/gizmoMode.js';
+import { initFilletHandle, updateFilletHandleScale, hideFilletHandle } from './render/filletHandleRender.js';
 
 let isRunning = false;
 
@@ -124,6 +125,7 @@ export function init(container, viewCubeContainer) {
             if (isGizmoModeActive()) endGizmoMode();
             if (isInSketchOnFaceMode()) exitSketchOnFace();
             hideGizmo();
+            hideFilletHandle();
 
             // Rebuild all body meshes from state
             const bodyGrp = getBodyGroup();
@@ -189,6 +191,9 @@ export function init(container, viewCubeContainer) {
 
     // Initialize translation gizmo
     initGizmo(scene);
+
+    // Initialize fillet/chamfer handle widget
+    initFilletHandle(scene);
 
     // Initialize face grid (for sketch-on-face mode)
     initFaceGrid(scene);
@@ -525,6 +530,7 @@ export function init(container, viewCubeContainer) {
     // === Gizmo: hide when any interactive mode starts or selection clears ===
     window.addEventListener('fromscratch:modestart', () => {
         hideGizmo();
+        hideFilletHandle();
         // Clear selection highlight so it doesn't mask the OCCT preview during drag modes
         updateHoverHighlight(null, getBodyGroup());
         updateSelectionHighlight(null, getBodyGroup());
@@ -586,7 +592,13 @@ export function init(container, viewCubeContainer) {
         _gizmoRaycaster.setFromCamera({ x: ndcX, y: ndcY }, getCamera());
 
         const hits = _gizmoRaycaster.intersectObjects(hitMeshes);
-        if (hits.length === 0) return;
+        if (hits.length === 0) {
+            // Gizmo visible but click not on arrow: block selection, hide gizmo
+            e.stopImmediatePropagation();
+            e.preventDefault();
+            hideGizmo();
+            return;
+        }
 
         const axis = hits[0].object.userData.axis;
         const sel = getBodySelection();
@@ -719,6 +731,9 @@ function animate() {
 
     // Keep gizmo at constant screen size
     updateGizmoScale();
+
+    // Keep fillet handle at constant screen size
+    updateFilletHandleScale();
 }
 
 /**
@@ -739,5 +754,6 @@ export { activateExtrudeTool, deactivateExtrudeTool };
 export { activateBodySelectTool, deactivateBodySelectTool };
 export { exitSketchOnFace, isInSketchOnFaceMode };
 export { undo, redo };
+export { startFilletMode, startChamferMode };
 
 export default { init, stop };

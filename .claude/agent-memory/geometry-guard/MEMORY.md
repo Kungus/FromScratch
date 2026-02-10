@@ -113,9 +113,33 @@ Since BRepCheck is unavailable:
 4. **Consider ShapeFix** — NOT AVAILABLE, skip
 5. **Error messages**: Improve from "Operation failed" to actionable guidance
 
+## Recent Audits
+
+### getAdjacentFaceNormals (2026-02-09)
+**Location**: `src/core/occtEngine.js` line 1258
+**Purpose**: Find faces adjacent to an edge, compute their normals for fillet/chamfer handle positioning
+**Critical issues found**:
+1. Memory leak: `tri.Triangle(1)` returns OCCT object, never `.delete()`'d (line 1298)
+2. Missing null check: `handleTri` should be validated before `.IsNull()` call (line 1294)
+3. Degenerate triangle handling: silently skips, could return < 2 normals for valid edge
+
+**Caller expectations**: `filletMode.js` and `chamferMode.js` assume exactly 2 normals returned (compute bisector via sum). Missing validation if < 2 returned.
+
+### tryFaceExtrudePreview (2026-02-09)
+**Location**: `src/tools/faceExtrudeMode.js` lines 37-70
+**Critical memory leaks in extrudeFaceAndFuse/extrudeFaceAndCut**:
+- Wire objects leak if exceptions thrown during face/prism/boolean creation
+- NO try/finally blocks in occtEngine.js extrude functions
+- All intermediate OCCT objects (wire, faceMaker, vec, prism, extrudedShape, fuse/cut) leak on error paths
+**Missing validation**:
+- No IsNull() check on resultShape before tessellation
+- No HasErrors() check on boolean operations
+- No tessellation output validation (NaN/bounds)
+**See**: `face-extrude-audit.md` for detailed analysis and fix recommendations
+
 ## File Locations
 
 - Core OCCT: `src/core/occtEngine.js`
 - Operation wrappers: `src/tools/bodyOperations.js`
-- Interactive modes: `src/tools/gizmoMode.js`, `src/tools/translateSubElementMode.js`
+- Interactive modes: `src/tools/gizmoMode.js`, `src/tools/translateSubElementMode.js`, `src/tools/filletMode.js`, `src/tools/chamferMode.js`
 - Tessellation: `src/core/occtTessellate.js` (not reviewed yet)

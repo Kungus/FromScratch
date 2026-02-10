@@ -485,6 +485,7 @@
             <strong>Tools:</strong><br>
             V: Select, R: Rect<br>
             C: Circle, E: Extrude<br>
+            F: Fillet, K: Chamfer<br>
             D: Dims, Shift+D: Dup<br>
             Del: Delete<br>
             Ctrl+Z: Undo, Ctrl+Y: Redo
@@ -527,9 +528,9 @@
     </script>
 
     <script type="module">
-        import { init, setGridSize, setSnapSize, getState, setActiveTool, activateRectangleTool, deactivateRectangleTool, activateCircleTool, deactivateCircleTool, activateSelectTool, deactivateSelectTool, activateExtrudeTool, deactivateExtrudeTool, activateBodySelectTool, deactivateBodySelectTool, exitSketchOnFace, isInSketchOnFaceMode, undo, redo } from './src/main.js';
+        import { init, setGridSize, setSnapSize, getState, setActiveTool, activateRectangleTool, deactivateRectangleTool, activateCircleTool, deactivateCircleTool, activateSelectTool, deactivateSelectTool, activateExtrudeTool, deactivateExtrudeTool, activateBodySelectTool, deactivateBodySelectTool, exitSketchOnFace, isInSketchOnFaceMode, undo, redo, startFilletMode, startChamferMode } from './src/main.js';
         import { setFrontView, setRightView, setTopView, set3DView } from './src/input/camera.js';
-        import { setSnapEnabled, isSnapEnabled } from './src/core/state.js';
+        import { setSnapEnabled, isSnapEnabled, getBodySelection, getBodyMultiSelection } from './src/core/state.js';
         import { onPointer } from './src/input/pointer.js';
         import { snap } from './src/core/snap.js';
         import { initOCCT } from './src/core/occtInit.js';
@@ -691,6 +692,36 @@
                 case 'e':
                     setTool('extrude');
                     break;
+                case 'f':
+                case 'k': {
+                    // F = Fillet, K = Chamfer — only when select tool is active and edge is selected
+                    if (currentTool !== 'select') break;
+                    const sel = getBodySelection();
+                    if (!sel || sel.type !== 'edge' || !sel.subElementData) break;
+                    const bodyId = sel.bodyId;
+                    const multiSel = getBodyMultiSelection();
+                    let edgeIndices;
+                    if (multiSel.length > 0) {
+                        edgeIndices = multiSel
+                            .filter(s => s.type === 'edge' && s.bodyId === bodyId && s.subElementData?.edgeIndex != null)
+                            .map(s => s.subElementData.edgeIndex);
+                    } else {
+                        edgeIndices = sel.subElementData.edgeIndex != null ? [sel.subElementData.edgeIndex] : [];
+                    }
+                    if (edgeIndices.length === 0) break;
+                    const sv = sel.subElementData.startVertex, ev = sel.subElementData.endVertex;
+                    const midpt = (sv && ev) ? {
+                        x: (sv.x + ev.x) / 2,
+                        y: (sv.y + ev.y) / 2,
+                        z: (sv.z + ev.z) / 2
+                    } : null;
+                    if (e.key.toLowerCase() === 'f') {
+                        startFilletMode(bodyId, edgeIndices, midpt);
+                    } else {
+                        startChamferMode(bodyId, edgeIndices, midpt);
+                    }
+                    break;
+                }
                 case 'l':
                     setTool('line');
                     break;

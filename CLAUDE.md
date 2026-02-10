@@ -436,10 +436,38 @@ User Input → Tool → State → Render
 - Wire leak on MakeFace exception — fixed with `finally` block
 - Selection highlights masking OCCT preview during drag — cleared on `fromscratch:modestart`
 
+### 2026-02-09: UX Polish — Handle Interactions & Selection Blocking
+**Problem:** Clicking fillet/chamfer handle immediately committed (often with radius 0), returning to select mode. Gizmo allowed sub-element selection while visible, and couldn't be reused after first drag.
+
+**Modified modules:**
+- `src/tools/filletMode.js` — Click-and-drag on fillet handle: mousedown on handle starts drag, mousemove updates radius, mouseup ends drag (keeps preview), click off handle or Enter commits. Added handle hover highlight via raycasting. Fixed `stopPropagation` → `stopImmediatePropagation`.
+- `src/tools/chamferMode.js` — Same click-and-drag pattern as fillet mode.
+- `src/render/gizmoRender.js` — `showGizmo`/`hideGizmo` dispatch `fromscratch:gizmoshow`/`fromscratch:gizmohide` events (with change-detection guards to prevent duplicate dispatch).
+- `src/tools/bodySelectTool.js` — Added `gizmoSuppressed` flag: listens for `fromscratch:gizmoshow`/`gizmohide` to fully suppress hover and click while gizmo is visible.
+- `src/tools/gizmoMode.js` — `returnToGizmoIdle` now calls `setBodySelection('body', bodyId)` to re-establish selection after `applyMoveBody` clears it. Fixes gizmo becoming unresponsive after first drag.
+- `src/ui/contextWidget.js` — Added `_gizmoVisible` flag: widget suppressed while gizmo is visible (prevents flash when selection is re-established).
+- `src/main.js` — Gizmo capture-phase mousedown: clicks not on arrows now intercepted + gizmo hidden (instead of falling through to bodySelectTool).
+
+**New module:**
+- `src/render/filletHandleRender.js` — Fillet/chamfer handle widget: arrow at edge midpoint with invisible hit-test mesh, camera-distance scaling, hover highlight.
+
+**What works:**
+- Fillet/chamfer: click-hold handle → drag to set radius → release → preview stays → click away or Enter to commit, Escape to cancel
+- Gizmo: fully blocks face/edge/vertex selection and hover while visible
+- Gizmo: multi-axis sequential moves work (drag X, release, drag Y, release, drag Z...)
+- Gizmo: click off arrows hides gizmo and exits move mode
+- All operations still undoable
+
+**Key design:**
+- Handle raycasting uses same invisible hit-mesh pattern as gizmo arrows
+- `fromscratch:gizmoshow`/`gizmohide` events decouple gizmo visibility from bodySelectTool (no circular imports)
+- `gizmoSuppressed` flag separate from `modeSuppressed` — gizmo idle state is distinct from active drag modes
+- Body selection re-established in `returnToGizmoIdle` because all bodyOperations clear selection on commit
+
 ## Next Steps
 1. **POC 7: Full Loop** — complete workflow (all POCs integrated)
 2. **Push/Pull** — Drag faces to modify body dimensions (face extrude mode is the foundation)
-3. **Further main.js cleanup** — Tool callback wiring (~300 lines) could become a `toolCallbacks.js` module
+3. **Optional polish** — Extract gizmo event handling from main.js → `ui/gizmoController.js`, extract status banner helper
 
 ## OpenCascade.js Architecture
 Bodies are now B-rep shapes stored in the OCCT kernel. Flow:

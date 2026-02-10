@@ -15,6 +15,7 @@ import { enterSketchOnFace } from '../tools/sketchOnFaceTool.js';
 let _el = null;           // The widget DOM element
 let _container = null;     // The canvas container
 let _deps = {};            // Injected mode-starting functions
+let _gizmoVisible = false; // Suppress widget while gizmo is shown
 
 /**
  * One-time init: create DOM, subscribe to state, listen for mode start events.
@@ -39,6 +40,15 @@ export function initContextWidget(container, deps) {
 
     // Hide when any interactive mode starts
     window.addEventListener('fromscratch:modestart', hideWidget);
+
+    // Hide and suppress while gizmo is visible
+    window.addEventListener('fromscratch:gizmoshow', () => {
+        _gizmoVisible = true;
+        hideWidget();
+    });
+    window.addEventListener('fromscratch:gizmohide', () => {
+        _gizmoVisible = false;
+    });
 
     // Hide when tool changes (user switches to rect/circle/extrude tool)
     window.addEventListener('fromscratch:settool', hideWidget);
@@ -67,6 +77,9 @@ function rebuildWidget(selection) {
         hideWidget();
         return;
     }
+
+    // Don't show widget while gizmo is visible (gizmo owns the interaction)
+    if (_gizmoVisible) return;
 
     const items = buildWidgetItems(selection);
     if (items.length === 0) {

@@ -14,7 +14,7 @@ import { getEdgeEndpoints, getVertexPosition, rebuildShapeWithMovedVertices } fr
 import { tessellateShape } from '../core/occtTessellate.js';
 import { showDimensions, hideDimensions } from '../render/dimensionRender.js';
 import { showDimensionInput, hideInput } from '../ui/dimensionInput.js';
-import { updateTessellationPreview, clearBodyPreview } from '../render/bodyRender.js';
+import { updateTessellationPreview, clearBodyPreview, hideBodyMesh, showBodyMesh } from '../render/bodyRender.js';
 import { getScene } from '../render/sceneSetup.js';
 
 let _applyTranslateSubElement = null;
@@ -168,6 +168,7 @@ function tryRebuildPreview(bodyId, elementType, elementData, delta) {
         mode.lastPreviewDelta = { ...delta };
         mode.lastValidTessellation = tessellation;
 
+        hideBodyMesh(mode.bodyId);
         updateTessellationPreview(tessellation);
     } catch (e) {
         console.log('Translate preview error:', e.message || e);
@@ -505,6 +506,7 @@ export function endTranslateSubElementMode() {
         mode.axisLine = null;
     }
 
+    if (mode.bodyId) showBodyMesh(mode.bodyId);
     clearBodyPreview();
     hideDimensions();
     hideInput();

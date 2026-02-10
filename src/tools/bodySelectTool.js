@@ -24,7 +24,8 @@ const toolState = {
     dragStartY: 0,
     lastClickTime: 0,
     lastClickBodyId: null,
-    modeSuppressed: false
+    modeSuppressed: false,
+    gizmoSuppressed: false
 };
 
 // Suppress hover/click while an interactive mode is active
@@ -34,6 +35,13 @@ window.addEventListener('fromscratch:modestart', () => {
 });
 window.addEventListener('fromscratch:modeend', () => {
     toolState.modeSuppressed = false;
+});
+window.addEventListener('fromscratch:gizmoshow', () => {
+    toolState.gizmoSuppressed = true;
+    clearBodyHover();
+});
+window.addEventListener('fromscratch:gizmohide', () => {
+    toolState.gizmoSuppressed = false;
 });
 
 // Double-click timing (ms) — 500ms matches typical OS default
@@ -103,7 +111,7 @@ export function setBodySelectCallbacks(callbacks) {
 // =============================================================================
 
 function handlePointerDown(state) {
-    if (!toolState.isActive || toolState.modeSuppressed) return;
+    if (!toolState.isActive || toolState.modeSuppressed || toolState.gizmoSuppressed) return;
 
     const currentSelection = getBodySelection();
     const bodyHit = state.bodyHit;
@@ -201,7 +209,7 @@ function handlePointerDown(state) {
 }
 
 function handlePointerMove(state) {
-    if (!toolState.isActive || toolState.modeSuppressed) return;
+    if (!toolState.isActive || toolState.modeSuppressed || toolState.gizmoSuppressed) return;
 
     // Don't update hover while dragging
     if (toolState.isDragging) return;

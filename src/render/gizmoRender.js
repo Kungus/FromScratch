@@ -119,7 +119,11 @@ export function showGizmo(worldPosition) {
     if (!gizmoGroup) return;
     gizmoGroup.position.set(worldPosition.x, worldPosition.y, worldPosition.z);
     updateGizmoScale();
+    const wasHidden = !gizmoGroup.visible;
     gizmoGroup.visible = true;
+    if (wasHidden) {
+        window.dispatchEvent(new CustomEvent('fromscratch:gizmoshow'));
+    }
 }
 
 /**
@@ -127,7 +131,11 @@ export function showGizmo(worldPosition) {
  */
 export function hideGizmo() {
     if (!gizmoGroup) return;
+    const wasVisible = gizmoGroup.visible;
     gizmoGroup.visible = false;
+    if (wasVisible) {
+        window.dispatchEvent(new CustomEvent('fromscratch:gizmohide'));
+    }
 }
 
 /**

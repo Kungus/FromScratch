@@ -130,6 +130,38 @@ export function showDimensions(value1, value2, worldX, worldZ, worldY = 0) {
 }
 
 /**
+ * Make the dimension label clickable (opens dimension input on click).
+ * @param {Function} onClick - Callback when label is clicked
+ */
+let _clickHandler = null;
+export function makeDimensionClickable(onClick) {
+    if (!dimensionLabel) return;
+    makeDimensionNotClickable(); // clean up previous
+    dimensionLabel.style.pointerEvents = 'auto';
+    dimensionLabel.style.cursor = 'pointer';
+    dimensionLabel.style.borderColor = 'rgba(99, 102, 241, 0.6)';
+    _clickHandler = (e) => {
+        e.stopPropagation();
+        onClick();
+    };
+    dimensionLabel.addEventListener('click', _clickHandler);
+}
+
+/**
+ * Remove clickability from the dimension label.
+ */
+export function makeDimensionNotClickable() {
+    if (!dimensionLabel) return;
+    dimensionLabel.style.pointerEvents = 'none';
+    dimensionLabel.style.cursor = '';
+    dimensionLabel.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+    if (_clickHandler) {
+        dimensionLabel.removeEventListener('click', _clickHandler);
+        _clickHandler = null;
+    }
+}
+
+/**
  * Hide dimension label
  */
 export function hideDimensions() {
@@ -154,5 +186,7 @@ export default {
     initDimensionRender,
     showRectDimensions,
     showDimensions,
-    hideDimensions
+    hideDimensions,
+    makeDimensionClickable,
+    makeDimensionNotClickable
 };

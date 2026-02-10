@@ -33,7 +33,25 @@
 - BRepBuilderAPI classes: `module.TKTopAlgo.wasm`
 - ShapeFix classes: `module.TKShHealing.wasm`
 - BRepCheck classes: `module.TKTopAlgo.wasm`
-- All these modules are loaded by `occtInit.js`
+- ShapeUpgrade classes (incl. UnifySameDomain): `module.TKShHealing.wasm`
+- BRepAlgoAPI boolean classes: `module.TKBO.wasm` + `module.TKBool.wasm`
+- BRepFeat classes (SplitShape): `module.TKFeat.wasm` -- EXISTS in build but NOT loaded by occtInit.js
+- All modules listed in occtInit.js REQUIRED_LIBS are loaded at startup
+
+### Boolean Operation Coplanar Face Behavior
+- **BRepAlgoAPI_Fuse does NOT merge coplanar faces by default** -- keeps them as separate topology
+- Result of fusing box + protrusion on same plane: adjacent coplanar faces remain split with seam edges
+- **SimplifyResult(unifyEdges, unifyFaces, angularTol)** merges coplanar faces AFTER Build
+  - Inherited from BRepAlgoAPI_BuilderAlgo, available on Fuse/Cut/Common
+  - Default: unifyEdges=true, unifyFaces=true
+  - Internally uses ShapeUpgrade_UnifySameDomain
+- **ShapeUpgrade_UnifySameDomain** -- standalone post-processor, in TKShHealing (LOADED)
+  - Constructors: _1() empty, _2(shape, unifyEdges, unifyFaces, concatBSplines)
+  - Methods: Build(), Shape(), History(), KeepShape(), SetLinearTolerance(), SetAngularTolerance()
+  - WARNING: UnifyEdges+UnifyFaces together can produce INVALID solids on curved shapes
+  - Safe pattern: `(shape, false, true, false)` -- faces only, no edge unification
+- **Face splitting tools**: BRepFeat_SplitShape (in TKFeat, not loaded), BRepAlgoAPI_Splitter
+- See: `coplanar-faces.md` for detailed analysis
 
 ### Key Findings
 1. **BRepBuilderAPI_MakeVertex has NO _1 suffix** - it's just `BRepBuilderAPI_MakeVertex`

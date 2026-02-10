@@ -44,7 +44,7 @@ function createGroundPlane() {
         color: GROUND_COLOR,
         roughness: 0.9,
         metalness: 0.1,
-        side: THREE.DoubleSide
+        side: THREE.FrontSide
     });
     
     groundPlane = new THREE.Mesh(geometry, material);

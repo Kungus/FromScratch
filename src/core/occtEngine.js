@@ -394,48 +394,30 @@ export function extrudeFaceAndFuse(shape, face, direction) {
     const wire = oc.TopoDS.Wire_1(wireExplorer.Current());
     wireExplorer.delete();
 
-    const faceMaker = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
-    if (!faceMaker.IsDone()) {
-        faceMaker.delete();
+    let faceMaker = null, independentFace = null, vec = null, prism = null, extrudedShape = null, fuse = null;
+    try {
+        faceMaker = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
+        if (!faceMaker.IsDone()) throw new Error('Failed to rebuild face from wire');
+        independentFace = faceMaker.Shape();
+
+        vec = new oc.gp_Vec_4(direction.x, direction.y, direction.z);
+        prism = new oc.BRepPrimAPI_MakePrism_1(independentFace, vec, false, true);
+        if (!prism.IsDone()) throw new Error('Face extrusion prism failed');
+        extrudedShape = prism.Shape();
+
+        fuse = new oc.BRepAlgoAPI_Fuse_3(shape, extrudedShape);
+        if (!fuse.IsDone()) throw new Error('Boolean fuse failed during face extrusion');
+
+        return fuse.Shape();
+    } finally {
         wire.delete();
-        throw new Error('Failed to rebuild face from wire');
+        faceMaker?.delete();
+        independentFace?.delete();
+        vec?.delete();
+        prism?.delete();
+        extrudedShape?.delete();
+        fuse?.delete();
     }
-    const independentFace = faceMaker.Shape();
-
-    const vec = new oc.gp_Vec_4(direction.x, direction.y, direction.z);
-    const prism = new oc.BRepPrimAPI_MakePrism_1(independentFace, vec, false, true);
-    if (!prism.IsDone()) {
-        prism.delete();
-        vec.delete();
-        faceMaker.delete();
-        independentFace.delete();
-        wire.delete();
-        throw new Error('Face extrusion prism failed');
-    }
-    const extrudedShape = prism.Shape();
-
-    const fuse = new oc.BRepAlgoAPI_Fuse_3(shape, extrudedShape);
-    if (!fuse.IsDone()) {
-        fuse.delete();
-        prism.delete();
-        extrudedShape.delete();
-        vec.delete();
-        faceMaker.delete();
-        independentFace.delete();
-        wire.delete();
-        throw new Error('Boolean fuse failed during face extrusion');
-    }
-    const result = fuse.Shape();
-
-    wire.delete();
-    faceMaker.delete();
-    independentFace.delete();
-    vec.delete();
-    prism.delete();
-    extrudedShape.delete();
-    fuse.delete();
-
-    return result;
 }
 
 /**
@@ -463,48 +445,30 @@ export function extrudeFaceAndCut(shape, face, direction) {
     const wire = oc.TopoDS.Wire_1(wireExplorer.Current());
     wireExplorer.delete();
 
-    const faceMaker = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
-    if (!faceMaker.IsDone()) {
-        faceMaker.delete();
+    let faceMaker = null, independentFace = null, vec = null, prism = null, extrudedShape = null, cut = null;
+    try {
+        faceMaker = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
+        if (!faceMaker.IsDone()) throw new Error('Failed to rebuild face from wire');
+        independentFace = faceMaker.Shape();
+
+        vec = new oc.gp_Vec_4(direction.x, direction.y, direction.z);
+        prism = new oc.BRepPrimAPI_MakePrism_1(independentFace, vec, false, true);
+        if (!prism.IsDone()) throw new Error('Face cut extrusion prism failed');
+        extrudedShape = prism.Shape();
+
+        cut = new oc.BRepAlgoAPI_Cut_3(shape, extrudedShape);
+        if (!cut.IsDone()) throw new Error('Boolean cut failed during face extrusion');
+
+        return cut.Shape();
+    } finally {
         wire.delete();
-        throw new Error('Failed to rebuild face from wire');
+        faceMaker?.delete();
+        independentFace?.delete();
+        vec?.delete();
+        prism?.delete();
+        extrudedShape?.delete();
+        cut?.delete();
     }
-    const independentFace = faceMaker.Shape();
-
-    const vec = new oc.gp_Vec_4(direction.x, direction.y, direction.z);
-    const prism = new oc.BRepPrimAPI_MakePrism_1(independentFace, vec, false, true);
-    if (!prism.IsDone()) {
-        prism.delete();
-        vec.delete();
-        faceMaker.delete();
-        independentFace.delete();
-        wire.delete();
-        throw new Error('Face cut extrusion prism failed');
-    }
-    const extrudedShape = prism.Shape();
-
-    const cut = new oc.BRepAlgoAPI_Cut_3(shape, extrudedShape);
-    if (!cut.IsDone()) {
-        cut.delete();
-        prism.delete();
-        extrudedShape.delete();
-        vec.delete();
-        faceMaker.delete();
-        independentFace.delete();
-        wire.delete();
-        throw new Error('Boolean cut failed during face extrusion');
-    }
-    const result = cut.Shape();
-
-    wire.delete();
-    faceMaker.delete();
-    independentFace.delete();
-    vec.delete();
-    prism.delete();
-    extrudedShape.delete();
-    cut.delete();
-
-    return result;
 }
 
 /**
@@ -1246,6 +1210,92 @@ export function getFaceVertexPositions(shape, faceIndex) {
     face.delete();
 
     return vertices;
+}
+
+/**
+ * Get the normals of faces adjacent to a given edge (typically 2 for a solid).
+ * Used to compute the outward handle direction for fillet/chamfer.
+ * @param {Object} shape - TopoDS_Shape
+ * @param {number} edgeIndex - Edge index from topology explorer
+ * @returns {Array<{x: number, y: number, z: number}>} Array of face normals (typically 2)
+ */
+export function getAdjacentFaceNormals(shape, edgeIndex) {
+    const oc = getOC();
+    const targetEdge = getEdgeByIndex(shape, edgeIndex);
+    if (!targetEdge) return [];
+
+    const normals = [];
+    const faceExplorer = new oc.TopExp_Explorer_2(
+        shape,
+        oc.TopAbs_ShapeEnum.TopAbs_FACE,
+        oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+
+    while (faceExplorer.More()) {
+        const face = oc.TopoDS.Face_1(faceExplorer.Current());
+        const edgeExp = new oc.TopExp_Explorer_2(
+            face,
+            oc.TopAbs_ShapeEnum.TopAbs_EDGE,
+            oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+        );
+
+        let found = false;
+        while (edgeExp.More()) {
+            const faceEdge = oc.TopoDS.Edge_1(edgeExp.Current());
+            if (faceEdge.IsSame(targetEdge)) {
+                found = true;
+                faceEdge.delete();
+                break;
+            }
+            faceEdge.delete();
+            edgeExp.Next();
+        }
+        edgeExp.delete();
+
+        if (found) {
+            // Compute face normal from triangulation
+            const loc = new oc.TopLoc_Location_1();
+            const handleTri = oc.BRep_Tool.Triangulation(face, loc);
+            if (handleTri && !handleTri.IsNull()) {
+                const tri = handleTri.get();
+                if (tri.NbTriangles() > 0) {
+                    const t = tri.Triangle(1); // 1-based
+                    const n1 = t.Value(1), n2 = t.Value(2), n3 = t.Value(3);
+                    t.delete();
+                    const p1 = tri.Node(n1), p2 = tri.Node(n2), p3 = tri.Node(n3);
+
+                    // Cross product to get face normal
+                    const ux = p2.X() - p1.X(), uy = p2.Y() - p1.Y(), uz = p2.Z() - p1.Z();
+                    const vx = p3.X() - p1.X(), vy = p3.Y() - p1.Y(), vz = p3.Z() - p1.Z();
+                    let nx = uy * vz - uz * vy;
+                    let ny = uz * vx - ux * vz;
+                    let nz = ux * vy - uy * vx;
+                    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+                    if (len > 1e-10) {
+                        nx /= len; ny /= len; nz /= len;
+                        // Account for face orientation
+                        if (face.IsEqual(faceExplorer.Current())) {
+                            const orient = face.Orientation_1();
+                            if (orient === oc.TopAbs_Orientation.TopAbs_REVERSED) {
+                                nx = -nx; ny = -ny; nz = -nz;
+                            }
+                        }
+                        normals.push({ x: nx, y: ny, z: nz });
+                    }
+                    p1.delete(); p2.delete(); p3.delete();
+                }
+            }
+            loc.delete();
+        }
+
+        face.delete();
+        faceExplorer.Next();
+        if (normals.length >= 2) break; // A solid edge borders exactly 2 faces
+    }
+    faceExplorer.delete();
+    targetEdge.delete();
+
+    return normals;
 }
 
 // =============================================================================
