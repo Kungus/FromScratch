@@ -219,6 +219,50 @@ export function makeCircleWire(centerU, centerV, radius, plane) {
 }
 
 /**
+ * Retry a boolean operation with fuzzy tolerance.
+ * Handles shapes with slightly inflated tolerances from sewing or rebuilding.
+ */
+function _booleanWithFuzzy(oc, shapeA, shapeB, operation) {
+    const argsL = new oc.TopTools_ListOfShape_1();
+    const toolsL = new oc.TopTools_ListOfShape_1();
+    argsL.Append_1(shapeA);
+    toolsL.Append_1(shapeB);
+
+    const op = operation === 'fuse'
+        ? new oc.BRepAlgoAPI_Fuse_1()
+        : new oc.BRepAlgoAPI_Cut_1();
+
+    op.SetArguments(argsL);
+    op.SetTools(toolsL);
+    op.SetFuzzyValue(1e-4);
+
+    const progress = new oc.Message_ProgressRange_1();
+    op.Build(progress);
+    progress.delete();
+
+    const done = op.IsDone();
+    const hasErrors = typeof op.HasErrors === 'function' && op.HasErrors();
+
+    if (!done || hasErrors) {
+        argsL.delete();
+        toolsL.delete();
+        op.delete();
+        throw new Error(`Boolean ${operation} failed (even with fuzzy tolerance)`);
+    }
+
+    const result = op.Shape();
+    argsL.delete();
+    toolsL.delete();
+    op.delete();
+
+    if (!result || result.IsNull()) {
+        throw new Error(`Boolean ${operation} produced null shape (even with fuzzy tolerance)`);
+    }
+
+    return result;
+}
+
+/**
  * Boolean cut: base - tool
  * @param {Object} baseShape - TopoDS_Shape to cut from
  * @param {Object} toolShape - TopoDS_Shape to cut with
@@ -226,27 +270,28 @@ export function makeCircleWire(centerU, centerV, radius, plane) {
  */
 export function booleanCut(baseShape, toolShape) {
     const oc = getOC();
-    const cut = new oc.BRepAlgoAPI_Cut_3(baseShape, toolShape);
 
-    if (!cut.IsDone()) {
+    // Try direct boolean first
+    try {
+        const cut = new oc.BRepAlgoAPI_Cut_3(baseShape, toolShape);
+        const done = cut.IsDone();
+        const hasErrors = typeof cut.HasErrors === 'function' && cut.HasErrors();
+
+        if (done && !hasErrors) {
+            const result = cut.Shape();
+            if (!result.IsNull()) {
+                cut.delete();
+                return result;
+            }
+        }
         cut.delete();
-        throw new Error('Boolean cut failed — shapes may have coincident or tangent faces');
+    } catch (e) {
+        // Fall through to fuzzy retry
     }
 
-    if (typeof cut.HasErrors === 'function' && cut.HasErrors()) {
-        cut.delete();
-        throw new Error('Boolean cut produced topology errors');
-    }
-
-    const result = cut.Shape();
-
-    if (result.IsNull()) {
-        cut.delete();
-        throw new Error('Boolean cut produced null shape');
-    }
-
-    cut.delete();
-    return result;
+    // Retry with fuzzy tolerance
+    console.log('booleanCut: retrying with fuzzy tolerance');
+    return _booleanWithFuzzy(oc, baseShape, toolShape, 'cut');
 }
 
 /**
@@ -257,27 +302,28 @@ export function booleanCut(baseShape, toolShape) {
  */
 export function booleanFuse(shapeA, shapeB) {
     const oc = getOC();
-    const fuse = new oc.BRepAlgoAPI_Fuse_3(shapeA, shapeB);
 
-    if (!fuse.IsDone()) {
+    // Try direct boolean first
+    try {
+        const fuse = new oc.BRepAlgoAPI_Fuse_3(shapeA, shapeB);
+        const done = fuse.IsDone();
+        const hasErrors = typeof fuse.HasErrors === 'function' && fuse.HasErrors();
+
+        if (done && !hasErrors) {
+            const result = fuse.Shape();
+            if (!result.IsNull()) {
+                fuse.delete();
+                return result;
+            }
+        }
         fuse.delete();
-        throw new Error('Boolean fuse failed — shapes may have coincident or tangent faces');
+    } catch (e) {
+        // Fall through to fuzzy retry
     }
 
-    if (typeof fuse.HasErrors === 'function' && fuse.HasErrors()) {
-        fuse.delete();
-        throw new Error('Boolean fuse produced topology errors');
-    }
-
-    const result = fuse.Shape();
-
-    if (result.IsNull()) {
-        fuse.delete();
-        throw new Error('Boolean fuse produced null shape');
-    }
-
-    fuse.delete();
-    return result;
+    // Retry with fuzzy tolerance
+    console.log('booleanFuse: retrying with fuzzy tolerance');
+    return _booleanWithFuzzy(oc, shapeA, shapeB, 'fuse');
 }
 
 /**
@@ -808,52 +854,66 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
         return _buildPreservingOriginals(oc, shape, TOLERANCE, wasMoved, getMovedPos, origFaceCount);
     }
 
-    // All planar faces — build fresh faces from moved positions
-    for (const fb of faceBoundaries) {
-        const verts = fb.positions;
-        const wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
+    // All planar faces — try shared-edge assembly first (no sewing, no tolerance inflation).
+    // Shared edges eliminate BRepBuilderAPI_Sewing which inflates tolerances and breaks booleans.
+    try {
+        const result = _buildWithSharedEdges(oc, faceBoundaries, TOLERANCE);
+        _validateShape(oc, result, origFaceCount);
+        console.log('rebuildShapeWithMovedVertices: shared-edge assembly succeeded (no sewing)');
+        return result;
+    } catch (sharedEdgeErr) {
+        console.warn('Shared-edge build failed, falling back to sewing:', sharedEdgeErr.message || sharedEdgeErr);
+    }
 
-        for (let i = 0; i < verts.length; i++) {
-            const p1 = verts[i];
-            const p2 = verts[(i + 1) % verts.length];
+    // ===== Fallback: Sewing-based assembly (may inflate tolerances) =====
+    const vertexCache = _createVertexCache(oc, TOLERANCE);
 
-            // Skip zero-length edges
-            const edgeDist = Math.sqrt(
-                (p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2 + (p2.z - p1.z) ** 2
-            );
-            if (edgeDist < TOLERANCE) continue;
+    try {
+        for (const fb of faceBoundaries) {
+            const verts = fb.positions;
+            const wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
 
-            const gp1 = new oc.gp_Pnt_3(p1.x, p1.y, p1.z);
-            const gp2 = new oc.gp_Pnt_3(p2.x, p2.y, p2.z);
-            const eb = new oc.BRepBuilderAPI_MakeEdge_3(gp1, gp2);
-            if (eb.IsDone()) {
-                const edge = eb.Edge();
-                wireBuilder.Add_1(edge);
-                edge.delete();
+            for (let i = 0; i < verts.length; i++) {
+                const p1 = verts[i];
+                const p2 = verts[(i + 1) % verts.length];
+
+                const edgeDist = Math.sqrt(
+                    (p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2 + (p2.z - p1.z) ** 2
+                );
+                if (edgeDist < TOLERANCE) continue;
+
+                const v1 = vertexCache.getOrCreate(p1.x, p1.y, p1.z);
+                const v2 = vertexCache.getOrCreate(p2.x, p2.y, p2.z);
+                const eb = new oc.BRepBuilderAPI_MakeEdge_2(v1, v2);
+                if (eb.IsDone()) {
+                    const edge = eb.Edge();
+                    wireBuilder.Add_1(edge);
+                    edge.delete();
+                }
+                eb.delete();
             }
-            eb.delete();
-            gp1.delete();
-            gp2.delete();
-        }
 
-        if (!wireBuilder.IsDone()) {
+            if (!wireBuilder.IsDone()) {
+                wireBuilder.delete();
+                continue;
+            }
+
+            const wire = wireBuilder.Wire();
             wireBuilder.delete();
-            continue;
-        }
 
-        const wire = wireBuilder.Wire();
-        wireBuilder.delete();
-
-        try {
-            const faceMaker = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
-            if (faceMaker.IsDone()) {
-                newFaces.push(faceMaker.Shape());
+            try {
+                const faceMaker = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
+                if (faceMaker.IsDone()) {
+                    newFaces.push(faceMaker.Shape());
+                }
+                faceMaker.delete();
+            } catch (e) {
+                console.warn('Face build failed:', e.message || e);
             }
-            faceMaker.delete();
-        } catch (e) {
-            console.warn('Face build failed:', e.message || e);
+            wire.delete();
         }
-        wire.delete();
+    } finally {
+        vertexCache.deleteAll();
     }
 
     if (newFaces.length < 4) {
@@ -861,10 +921,195 @@ export function rebuildShapeWithMovedVertices(shape, vertexMoves) {
         throw new Error(`Move failed: only ${newFaces.length} faces built (need >= 4)`);
     }
 
-    // ===== Phase 3: Sew faces into a proper shell =====
+    // Sewing fallback (may inflate tolerances — booleans may need fuzzy retry)
     const result = _sewFacesIntoSolid(oc, newFaces, TOLERANCE, origFaceCount);
     newFaces.forEach(f => { try { f.delete(); } catch (_) {} });
     return result;
+}
+
+/**
+ * Build a solid from face boundaries using shared vertex AND edge topology.
+ * Each unique edge between two vertices is created once and reused (with reversed
+ * orientation) by adjacent faces, producing a properly closed shell without sewing.
+ * This eliminates tolerance inflation that causes downstream boolean failures.
+ */
+function _buildWithSharedEdges(oc, faceBoundaries, TOLERANCE) {
+    const vertexCache = _createVertexCache(oc, TOLERANCE);
+    const edgeCache = new Map(); // canonKey → TopoDS_Edge
+    const newFaces = [];
+
+    try {
+        for (const fb of faceBoundaries) {
+            const verts = fb.positions;
+            const wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
+
+            for (let i = 0; i < verts.length; i++) {
+                const p1 = verts[i];
+                const p2 = verts[(i + 1) % verts.length];
+
+                const edgeDist = Math.sqrt(
+                    (p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2 + (p2.z - p1.z) ** 2
+                );
+                if (edgeDist < TOLERANCE) continue;
+
+                const v1 = vertexCache.getOrCreate(p1.x, p1.y, p1.z);
+                const v2 = vertexCache.getOrCreate(p2.x, p2.y, p2.z);
+                const v1Key = vertexCache.getKey(p1.x, p1.y, p1.z);
+                const v2Key = vertexCache.getKey(p2.x, p2.y, p2.z);
+
+                // Canonical edge direction: smaller key first
+                const isForward = v1Key <= v2Key;
+                const canonKey = isForward ? `${v1Key}|${v2Key}` : `${v2Key}|${v1Key}`;
+
+                // Create canonical edge once (shared between adjacent faces)
+                if (!edgeCache.has(canonKey)) {
+                    const [cv1, cv2] = isForward ? [v1, v2] : [v2, v1];
+                    const eb = new oc.BRepBuilderAPI_MakeEdge_2(cv1, cv2);
+                    if (!eb.IsDone()) {
+                        eb.delete();
+                        continue;
+                    }
+                    edgeCache.set(canonKey, eb.Edge());
+                    eb.delete();
+                }
+
+                const canonEdge = edgeCache.get(canonKey);
+
+                if (isForward) {
+                    wireBuilder.Add_1(canonEdge);
+                } else {
+                    // Reversed copy shares the same underlying BRep_TEdge
+                    const revShape = canonEdge.Reversed();
+                    const revEdge = oc.TopoDS.Edge_1(revShape);
+                    wireBuilder.Add_1(revEdge);
+                    revEdge.delete();
+                    revShape.delete();
+                }
+            }
+
+            if (!wireBuilder.IsDone()) {
+                wireBuilder.delete();
+                continue;
+            }
+
+            const wire = wireBuilder.Wire();
+            wireBuilder.delete();
+
+            try {
+                const faceMaker = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
+                if (faceMaker.IsDone()) {
+                    newFaces.push(faceMaker.Shape());
+                }
+                faceMaker.delete();
+            } catch (e) {
+                console.warn('Face build failed:', e.message || e);
+            }
+            wire.delete();
+        }
+    } finally {
+        vertexCache.deleteAll();
+        edgeCache.clear(); // Edge data persists via faces (OCCT handle refs)
+    }
+
+    if (newFaces.length < 4) {
+        newFaces.forEach(f => { try { f.delete(); } catch (_) {} });
+        throw new Error(`Shared-edge build: only ${newFaces.length} faces built (need >= 4)`);
+    }
+
+    // Assemble faces into shell — no sewing needed (edges already shared)
+    const builder = new oc.BRep_Builder();
+    const shell = new oc.TopoDS_Shell();
+    builder.MakeShell(shell);
+    for (const f of newFaces) {
+        builder.Add(shell, f);
+    }
+    builder.delete();
+    newFaces.forEach(f => { try { f.delete(); } catch (_) {} });
+
+    // Fix shell orientation (defense-in-depth)
+    let fixedShell = null;
+    try {
+        const shellFixer = new oc.ShapeFix_Shell_2(shell);
+        const progress = new oc.Message_ProgressRange_1();
+        shellFixer.Perform(progress);
+        progress.delete();
+        fixedShell = shellFixer.Shell();
+        shellFixer.delete();
+        console.log('rebuildShapeWithMovedVertices: ShapeFix_Shell applied');
+    } catch (e) {
+        // ShapeFix_Shell not available — try ShapeFix_Shape
+        try {
+            const fixer = new oc.ShapeFix_Shape_2(shell);
+            const progress = new oc.Message_ProgressRange_1();
+            fixer.Perform(progress);
+            progress.delete();
+            fixedShell = fixer.Shape();
+            fixer.delete();
+        } catch (_) {
+            // No fix available
+        }
+    }
+
+    const shellForSolid = (fixedShell && !fixedShell.IsNull()) ? fixedShell : shell;
+
+    // Promote to solid
+    let result = null;
+    try {
+        const solidMaker = new oc.BRepBuilderAPI_MakeSolid_3(shellForSolid);
+        if (solidMaker.IsDone()) {
+            result = solidMaker.Shape();
+        }
+        solidMaker.delete();
+    } catch (_) {}
+
+    // Clean up shells
+    try { shell.delete(); } catch (_) {}
+    if (fixedShell && fixedShell !== shell) {
+        try { fixedShell.delete(); } catch (_) {}
+    }
+
+    if (!result || result.IsNull()) {
+        if (result) { try { result.delete(); } catch (_) {} }
+        throw new Error('Shared-edge build: could not promote shell to solid');
+    }
+
+    return result;
+}
+
+/**
+ * Create a vertex cache for sharing TopoDS_Vertex objects across faces.
+ * Using shared vertices ensures adjacent faces share edge topology from construction,
+ * producing solids that are robust for boolean operations (no sewing-induced tolerance inflation).
+ */
+function _createVertexCache(oc, TOLERANCE) {
+    const cache = new Map();
+
+    function getKey(x, y, z) {
+        return `${Math.round(x / TOLERANCE)},${Math.round(y / TOLERANCE)},${Math.round(z / TOLERANCE)}`;
+    }
+
+    return {
+        getKey,
+        getOrCreate(x, y, z) {
+            const key = getKey(x, y, z);
+            if (cache.has(key)) return cache.get(key);
+
+            const pnt = new oc.gp_Pnt_3(x, y, z);
+            const maker = new oc.BRepBuilderAPI_MakeVertex(pnt);
+            const vertex = maker.Vertex();
+            maker.delete();
+            pnt.delete();
+            cache.set(key, vertex);
+            return vertex;
+        },
+
+        deleteAll() {
+            for (const v of cache.values()) {
+                try { v.delete(); } catch (_) {}
+            }
+            cache.clear();
+        }
+    };
 }
 
 /**
@@ -1032,6 +1277,7 @@ function _validateShape(oc, shape, origFaceCount) {
  */
 function _buildPreservingOriginals(oc, shape, TOLERANCE, wasMoved, getMovedPos, origFaceCount) {
     const newFaces = [];
+    const vertexCache = _createVertexCache(oc, TOLERANCE);
     const faceExplorer = new oc.TopExp_Explorer_2(
         shape,
         oc.TopAbs_ShapeEnum.TopAbs_FACE,
@@ -1113,17 +1359,15 @@ function _buildPreservingOriginals(oc, shape, TOLERANCE, wasMoved, getMovedPos, 
                 );
 
                 if (edgeDist > TOLERANCE) {
-                    const gp1 = new oc.gp_Pnt_3(newP1.x, newP1.y, newP1.z);
-                    const gp2 = new oc.gp_Pnt_3(newP2.x, newP2.y, newP2.z);
-                    const edgeBuilder = new oc.BRepBuilderAPI_MakeEdge_3(gp1, gp2);
+                    const sv1 = vertexCache.getOrCreate(newP1.x, newP1.y, newP1.z);
+                    const sv2 = vertexCache.getOrCreate(newP2.x, newP2.y, newP2.z);
+                    const edgeBuilder = new oc.BRepBuilderAPI_MakeEdge_2(sv1, sv2);
                     if (edgeBuilder.IsDone()) {
                         const newEdge = edgeBuilder.Edge();
                         newWireBuilder.Add_1(newEdge);
                         newEdge.delete();
                     }
                     edgeBuilder.delete();
-                    gp1.delete();
-                    gp2.delete();
                 }
             }
 
@@ -1158,6 +1402,8 @@ function _buildPreservingOriginals(oc, shape, TOLERANCE, wasMoved, getMovedPos, 
         faceExplorer.Next();
     }
     faceExplorer.delete();
+
+    vertexCache.deleteAll();
 
     if (newFaces.length === 0) {
         throw new Error('Move failed: no valid faces could be rebuilt');

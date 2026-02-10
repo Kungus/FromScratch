@@ -13,7 +13,8 @@ import { getCamera } from '../input/camera.js';
 import { getBodyById, setBodySelection } from '../core/state.js';
 import { getShape } from '../core/occtShapeStore.js';
 import { getEdgeEndpoints, getVertexPosition, getFaceVertexPositions, rebuildShapeWithMovedVertices } from '../core/occtEngine.js';
-import { tessellateShape } from '../core/occtTessellate.js';
+import { tessellateShapeForPreview } from '../core/occtTessellate.js';
+import { createPreviewScheduler } from '../core/previewScheduler.js';
 import { showDimensions, hideDimensions } from '../render/dimensionRender.js';
 import { showDimensionInput, hideInput } from '../ui/dimensionInput.js';
 import { updateTessellationPreview, updateFaceExtrudePreview, clearBodyPreview, getBodyGroup, hideBodyMesh, showBodyMesh } from '../render/bodyRender.js';
@@ -37,7 +38,7 @@ const mode = {
     worldOrigin: null,     // gizmo center in world
     delta: 0,              // scalar distance along axis
     lastPreviewDelta: null,
-    debounceTimer: null,
+    scheduler: null,
     initialGroupPos: null, // for body move preview
     cleanup: null
 };
@@ -86,14 +87,16 @@ function getDeltaVec() {
 
 /**
  * Try to rebuild OCCT shape preview for sub-element moves.
+ * @param {number} deltaScalar - scalar distance along the active axis
  */
-function tryRebuildPreview() {
+function tryRebuildPreview(deltaScalar) {
     const body = getBodyById(mode.bodyId);
     if (!body || !body.occtShapeRef) return;
     const shape = getShape(body.occtShapeRef);
     if (!shape) return;
 
-    const delta = getDeltaVec();
+    const dir = AXIS_DIRS[mode.axis];
+    const delta = { x: dir.x * deltaScalar, y: dir.y * deltaScalar, z: dir.z * deltaScalar };
     console.log(`Gizmo preview: type=${mode.selectionType}, delta=(${delta.x.toFixed(3)},${delta.y.toFixed(3)},${delta.z.toFixed(3)})`);
 
     try {
@@ -124,10 +127,10 @@ function tryRebuildPreview() {
         }
 
         const newShape = rebuildShapeWithMovedVertices(shape, vertexMoves);
-        const tessellation = tessellateShape(newShape);
+        const tessellation = tessellateShapeForPreview(newShape);
         newShape.delete();
 
-        mode.lastPreviewDelta = mode.delta;
+        mode.lastPreviewDelta = deltaScalar;
         hideBodyMesh(mode.bodyId);
         updateTessellationPreview(tessellation);
     } catch (e) {
@@ -167,7 +170,9 @@ export function startGizmoMode(axis, selectionInfo) {
     mode.worldOrigin = selectionInfo.worldCenter.clone();
     mode.delta = 0;
     mode.lastPreviewDelta = null;
-    mode.debounceTimer = null;
+    mode.scheduler = createPreviewScheduler((deltaScalar) => {
+        tryRebuildPreview(deltaScalar);
+    });
     mode.initialGroupPos = null;
 
     // Check if face normal aligns with the drag axis (for face extrusion delegation)
@@ -269,12 +274,11 @@ export function startGizmoMode(axis, selectionInfo) {
                 });
             }
         } else {
-            // Debounced OCCT rebuild for vertex/edge/face-tangent
+            // RAF-coalesced OCCT rebuild for vertex/edge/face-tangent
             const prevDelta = mode.lastPreviewDelta;
             const deltaDiff = prevDelta != null ? Math.abs(worldDist - prevDelta) : absDelta;
             if (deltaDiff > 0.02) {
-                if (mode.debounceTimer) clearTimeout(mode.debounceTimer);
-                mode.debounceTimer = setTimeout(() => tryRebuildPreview(), 100);
+                mode.scheduler.schedule(worldDist);
             }
         }
 
@@ -432,7 +436,7 @@ function returnToGizmoIdle(bodyId) {
     if (!mode.active) return;
 
     if (mode.cleanup) mode.cleanup();
-    if (mode.debounceTimer) clearTimeout(mode.debounceTimer);
+    if (mode.scheduler) mode.scheduler.cancel();
 
     // Reset body mesh preview position (needed if drag was canceled or delta was tiny)
     if (mode.selectionType === 'body' && mode.initialGroupPos) {
@@ -473,6 +477,7 @@ function returnToGizmoIdle(bodyId) {
     mode.worldOrigin = null;
     mode.delta = 0;
     mode.lastPreviewDelta = null;
+    mode.scheduler = null;
     mode.initialGroupPos = null;
     mode.cleanup = null;
 
@@ -508,7 +513,7 @@ export function endGizmoMode() {
     window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
 
     if (mode.cleanup) mode.cleanup();
-    if (mode.debounceTimer) clearTimeout(mode.debounceTimer);
+    if (mode.scheduler) mode.scheduler.cancel();
 
     // Reset body mesh position if needed
     if (mode.selectionType === 'body' && mode.initialGroupPos) {
@@ -545,6 +550,7 @@ export function endGizmoMode() {
     mode.worldOrigin = null;
     mode.delta = 0;
     mode.lastPreviewDelta = null;
+    mode.scheduler = null;
     mode.initialGroupPos = null;
     mode.cleanup = null;
 }

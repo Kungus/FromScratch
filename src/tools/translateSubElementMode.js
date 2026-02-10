@@ -11,7 +11,8 @@ import { getCamera } from '../input/camera.js';
 import { getBodyById } from '../core/state.js';
 import { getShape } from '../core/occtShapeStore.js';
 import { getEdgeEndpoints, getVertexPosition, rebuildShapeWithMovedVertices } from '../core/occtEngine.js';
-import { tessellateShape } from '../core/occtTessellate.js';
+import { tessellateShapeForPreview } from '../core/occtTessellate.js';
+import { createPreviewScheduler } from '../core/previewScheduler.js';
 import { showDimensions, hideDimensions } from '../render/dimensionRender.js';
 import { showDimensionInput, hideInput } from '../ui/dimensionInput.js';
 import { updateTessellationPreview, clearBodyPreview, hideBodyMesh, showBodyMesh } from '../render/bodyRender.js';
@@ -35,7 +36,7 @@ const mode = {
     delta: { x: 0, y: 0, z: 0 },
     lastPreviewDelta: null,
     lastValidTessellation: null,
-    debounceTimer: null,
+    scheduler: null,
     axisLine: null,
     cleanup: null
 };
@@ -162,7 +163,7 @@ function tryRebuildPreview(bodyId, elementType, elementData, delta) {
         }
 
         const newShape = rebuildShapeWithMovedVertices(shape, vertexMoves);
-        const tessellation = tessellateShape(newShape);
+        const tessellation = tessellateShapeForPreview(newShape);
         newShape.delete();
 
         mode.lastPreviewDelta = { ...delta };
@@ -196,7 +197,9 @@ export function startTranslateSubElementMode(bodyId, elementType, elementData) {
     mode.delta = { x: 0, y: 0, z: 0 };
     mode.lastPreviewDelta = null;
     mode.lastValidTessellation = null;
-    mode.debounceTimer = null;
+    mode.scheduler = createPreviewScheduler((delta) => {
+        tryRebuildPreview(bodyId, elementType, elementData, delta);
+    });
     mode.constraintDir = null;
     mode.edgeDir = null;
 
@@ -317,17 +320,14 @@ export function startTranslateSubElementMode(bodyId, elementType, elementData) {
             hideDimensions();
         }
 
-        // Debounced OCCT preview
+        // RAF-coalesced OCCT preview
         const prevDelta = mode.lastPreviewDelta;
         const deltaDiff = prevDelta
             ? Math.abs(dx - prevDelta.x) + Math.abs(dy - prevDelta.y) + Math.abs(dz - prevDelta.z)
             : totalDist;
 
         if (deltaDiff > 0.02) {
-            if (mode.debounceTimer) clearTimeout(mode.debounceTimer);
-            mode.debounceTimer = setTimeout(() => {
-                tryRebuildPreview(bodyId, elementType, elementData, mode.delta);
-            }, 100);
+            mode.scheduler.schedule({ ...mode.delta });
         }
 
         // Update axis line (vertex mode only)
@@ -489,7 +489,7 @@ export function endTranslateSubElementMode() {
     window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
 
     if (mode.cleanup) mode.cleanup();
-    if (mode.debounceTimer) clearTimeout(mode.debounceTimer);
+    if (mode.scheduler) mode.scheduler.cancel();
 
     const container = document.getElementById('canvas-container');
     if (container) container.style.cursor = '';
@@ -521,6 +521,7 @@ export function endTranslateSubElementMode() {
     mode.delta = { x: 0, y: 0, z: 0 };
     mode.lastPreviewDelta = null;
     mode.lastValidTessellation = null;
+    mode.scheduler = null;
     mode.cleanup = null;
 }
 

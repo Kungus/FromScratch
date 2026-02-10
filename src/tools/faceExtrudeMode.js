@@ -8,7 +8,8 @@ import { getCamera } from '../input/camera.js';
 import { getBodyById } from '../core/state.js';
 import { getShape } from '../core/occtShapeStore.js';
 import { getFaceByIndex, extrudeFaceAndFuse, extrudeFaceAndCut } from '../core/occtEngine.js';
-import { tessellateShape } from '../core/occtTessellate.js';
+import { tessellateShapeForPreview } from '../core/occtTessellate.js';
+import { createPreviewScheduler } from '../core/previewScheduler.js';
 import { showDimensions, hideDimensions } from '../render/dimensionRender.js';
 import { showDimensionInput, hideInput } from '../ui/dimensionInput.js';
 import { updateFaceExtrudePreview, updateTessellationPreview, clearBodyPreview, hideBodyMesh, showBodyMesh } from '../render/bodyRender.js';
@@ -28,7 +29,7 @@ const faceExtrudeMode = {
     lastPreviewHeight: -Infinity,
     lastValidHeight: 0,
     hasOcctPreview: false,
-    debounceTimer: null,
+    scheduler: null,
     cleanup: null
 };
 
@@ -61,7 +62,7 @@ function tryFaceExtrudePreview(bodyId, faceIndex, normal, height) {
             return;
         }
 
-        const tessellation = tessellateShape(resultShape);
+        const tessellation = tessellateShapeForPreview(resultShape);
         resultShape.delete();
 
         faceExtrudeMode.lastPreviewHeight = height;
@@ -132,7 +133,9 @@ export function startFaceExtrudeMode(bodyId, faceIndex, normal, facePositions) {
     faceExtrudeMode.lastPreviewHeight = -Infinity;
     faceExtrudeMode.lastValidHeight = 0;
     faceExtrudeMode.hasOcctPreview = false;
-    faceExtrudeMode.debounceTimer = null;
+    faceExtrudeMode.scheduler = createPreviewScheduler((height) => {
+        tryFaceExtrudePreview(bodyId, faceIndex, normal, height);
+    });
 
     // Event listeners
     const onMouseMove = (e) => {
@@ -173,12 +176,9 @@ export function startFaceExtrudeMode(bodyId, faceIndex, normal, facePositions) {
         const labelZ = fc.z + n.z * height / 2;
         showDimensions(Math.abs(height), null, labelX, labelZ, labelY);
 
-        // Debounced OCCT preview for accurate geometry
+        // RAF-coalesced OCCT preview for accurate geometry
         if (Math.abs(height) > 0.05 && Math.abs(height - faceExtrudeMode.lastPreviewHeight) > 0.05) {
-            if (faceExtrudeMode.debounceTimer) clearTimeout(faceExtrudeMode.debounceTimer);
-            faceExtrudeMode.debounceTimer = setTimeout(() => {
-                tryFaceExtrudePreview(bodyId, faceIndex, normal, height);
-            }, 100);
+            faceExtrudeMode.scheduler.schedule(height);
         }
     };
 
@@ -245,14 +245,14 @@ export function endFaceExtrudeMode() {
     if (!faceExtrudeMode.active) return;
     window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
     if (faceExtrudeMode.cleanup) faceExtrudeMode.cleanup();
-    if (faceExtrudeMode.debounceTimer) clearTimeout(faceExtrudeMode.debounceTimer);
+    if (faceExtrudeMode.scheduler) faceExtrudeMode.scheduler.cancel();
     if (faceExtrudeMode.bodyId) showBodyMesh(faceExtrudeMode.bodyId);
     faceExtrudeMode.active = false;
     faceExtrudeMode.cleanup = null;
     faceExtrudeMode.lastPreviewHeight = -Infinity;
     faceExtrudeMode.lastValidHeight = 0;
     faceExtrudeMode.hasOcctPreview = false;
-    faceExtrudeMode.debounceTimer = null;
+    faceExtrudeMode.scheduler = null;
     clearBodyPreview();
     hideDimensions();
     hideInput();

@@ -397,7 +397,7 @@ export function init(container, viewCubeContainer) {
 
     setExtrudeCommitCallback((bodyData) => {
         pushUndoSnapshot();
-        if (bodyData.isFaceExtrusion && bodyData.parentBodyId) {
+        if (bodyData.isFaceExtrusion && bodyData.parentBodyId && bodyData.occtShapeRef && bodyData.tessellation) {
             // Face extrusion: fused shape replaces the parent body
             const parentBody = getBodyById(bodyData.parentBodyId);
             if (parentBody) {
@@ -422,7 +422,7 @@ export function init(container, viewCubeContainer) {
                 addBodyMesh(bodyData);
             }
         } else {
-            // Ground plane extrusion: add new body
+            // Ground plane extrusion or failed face extrusion fallback: add new body
             addBody(bodyData);
             addBodyMesh(bodyData);
         }

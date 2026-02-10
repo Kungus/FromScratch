@@ -23,6 +23,7 @@ fromscratch/
 │   │   ├── occtShapeStore.js # Live shape registry (refId → TopoDS_Shape)
 │   │   ├── occtEngine.js   # Shape creation + boolean ops (pure functions)
 │   │   ├── occtTessellate.js # Shape → mesh data + topology maps
+│   │   ├── previewScheduler.js # RAF-based coalescing scheduler for live previews
 │   │   └── undoRedo.js       # Snapshot-based undo/redo engine
 │   ├── input/
 │   │   ├── camera.js       # Orbit (Shift+drag), pan, zoom
@@ -463,6 +464,40 @@ User Input → Tool → State → Render
 - `fromscratch:gizmoshow`/`gizmohide` events decouple gizmo visibility from bodySelectTool (no circular imports)
 - `gizmoSuppressed` flag separate from `modeSuppressed` — gizmo idle state is distinct from active drag modes
 - Body selection re-established in `returnToGizmoIdle` because all bodyOperations clear selection on commit
+
+### 2026-02-10: Preview Responsiveness + Geometry Robustness
+**New modules:**
+- `src/core/previewScheduler.js` — RAF-based coalescing scheduler replacing 100ms setTimeout debounce
+
+**Modified modules:**
+- `src/core/occtTessellate.js` — Refactored: extracted `_tessellate(shape, opts)` internal, added `tessellateShapeForPreview()` with coarser params (deflection 0.3, angDeflection 0.5, edgeSteps 8, skip vertex map)
+- `src/core/occtEngine.js` — Major changes:
+  - Added `_buildWithSharedEdges()`: shared vertex + edge topology assembly (no sewing → no tolerance inflation)
+  - Added `_booleanWithFuzzy()`: fuzzy-tolerance boolean retry via `SetFuzzyValue(1e-4)`
+  - Updated `booleanFuse`/`booleanCut`: try direct first, retry with fuzzy on failure
+  - Updated `_createVertexCache`: added `getKey()` method for edge cache keying
+  - `rebuildShapeWithMovedVertices` Phase 2: tries shared-edge assembly first, falls back to sewing
+- `src/tools/filletMode.js` — RAF scheduler + preview tessellation
+- `src/tools/chamferMode.js` — Same pattern as fillet
+- `src/tools/faceExtrudeMode.js` — Same pattern
+- `src/tools/translateSubElementMode.js` — Same pattern, passes `{ ...mode.delta }` snapshot
+- `src/tools/gizmoMode.js` — Refactored `tryRebuildPreview(deltaScalar)` param + scheduler
+- `src/tools/extrudeTool.js` — Defensive error handling: boolean failure → standalone fallback instead of destroying parent
+- `src/main.js` — Guard against null tessellation in face extrusion commit
+
+**What works:**
+- Preview updates ~6x faster (16ms RAF vs 100ms setTimeout) across all interactive modes
+- Preview meshes use coarser tessellation (visually acceptable for transparent overlays)
+- Committed shapes retain full-quality tessellation
+- Edge-manipulated shapes now boolean correctly (shared-edge topology eliminates sewing tolerance inflation)
+- Boolean operations retry with fuzzy tolerance if direct operation fails
+- Face extrusion on manipulated faces produces single fused body (not two separate shapes)
+
+**Key design:**
+- `createPreviewScheduler(computeFn)` — stores latest value, coalesces via single RAF, reschedules if new value arrives during computation
+- `_buildWithSharedEdges` — canonical edge cache keyed by sorted vertex keys; same `BRep_TEdge` shared between adjacent faces via `Reversed()` + downcast; `BRep_Builder.Add(shell, face)` assembles closed shell; `ShapeFix_Shell` for orientation; `MakeSolid_3` to promote
+- `_booleanWithFuzzy` — `BRepAlgoAPI_Fuse_1()`/`Cut_1()` + `SetArguments`/`SetTools`/`SetFuzzyValue(1e-4)` + `Build()` (builder pattern for pre-build configuration)
+- Two layers of defense: (1) shared-edge rebuild avoids tolerance inflation, (2) fuzzy boolean retry handles any remaining edge cases
 
 ## Next Steps
 1. **POC 7: Full Loop** — complete workflow (all POCs integrated)

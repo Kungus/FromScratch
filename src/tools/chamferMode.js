@@ -7,7 +7,8 @@
 import { getBodyById } from '../core/state.js';
 import { getShape } from '../core/occtShapeStore.js';
 import { chamferEdges, getEdgeByIndex, getAdjacentFaceNormals } from '../core/occtEngine.js';
-import { tessellateShape } from '../core/occtTessellate.js';
+import { tessellateShapeForPreview } from '../core/occtTessellate.js';
+import { createPreviewScheduler } from '../core/previewScheduler.js';
 import { showDimensions, hideDimensions, makeDimensionClickable, makeDimensionNotClickable } from '../render/dimensionRender.js';
 import { showDimensionInput, hideInput } from '../ui/dimensionInput.js';
 import { updateTessellationPreview, clearBodyPreview, hideBodyMesh, showBodyMesh } from '../render/bodyRender.js';
@@ -32,7 +33,7 @@ const chamferMode = {
     lastPreviewDistance: -1,
     lastValidTessellation: null,
     lastValidDistance: 0,
-    debounceTimer: null,
+    scheduler: null,
     cleanup: null
 };
 
@@ -78,7 +79,7 @@ function tryChamferPreview(bodyId, edgeIndices, distance) {
 
     try {
         const chamferedShape = chamferEdges(shape, edges, distance);
-        const tessellation = tessellateShape(chamferedShape);
+        const tessellation = tessellateShapeForPreview(chamferedShape);
         chamferedShape.delete();
 
         chamferMode.lastPreviewDistance = distance;
@@ -115,7 +116,9 @@ export function startChamferMode(bodyId, edgeIndices, edgeMidpoint) {
     chamferMode.lastPreviewDistance = -1;
     chamferMode.lastValidTessellation = null;
     chamferMode.lastValidDistance = 0;
-    chamferMode.debounceTimer = null;
+    chamferMode.scheduler = createPreviewScheduler((distance) => {
+        tryChamferPreview(bodyId, edgeIndices, distance);
+    });
     chamferMode.handleDir = null;
     chamferMode.screenAxisDir = null;
 
@@ -216,12 +219,9 @@ export function startChamferMode(bodyId, edgeIndices, edgeMidpoint) {
         // Make label clickable (once visible)
         makeDimensionClickable(openDimensionInput);
 
-        // Debounced OCCT chamfer preview
+        // RAF-coalesced OCCT chamfer preview
         if (Math.abs(distance - chamferMode.lastPreviewDistance) > 0.02) {
-            if (chamferMode.debounceTimer) clearTimeout(chamferMode.debounceTimer);
-            chamferMode.debounceTimer = setTimeout(() => {
-                tryChamferPreview(bodyId, edgeIndices, distance);
-            }, 100);
+            chamferMode.scheduler.schedule(distance);
         }
     };
 
@@ -291,7 +291,7 @@ export function endChamferMode() {
     if (!chamferMode.active) return;
     window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
     if (chamferMode.cleanup) chamferMode.cleanup();
-    if (chamferMode.debounceTimer) clearTimeout(chamferMode.debounceTimer);
+    if (chamferMode.scheduler) chamferMode.scheduler.cancel();
     if (chamferMode.bodyId) showBodyMesh(chamferMode.bodyId);
     hideFilletHandle();
     chamferMode.active = false;

@@ -14,22 +14,38 @@
 
 import { getOC } from './occtInit.js';
 
+const DEFAULTS = {
+    deflection: 0.1,
+    angDeflection: 0.25,
+    edgeSteps: 24,
+    skipVertexMap: false
+};
+
+const PREVIEW = {
+    deflection: 0.3,
+    angDeflection: 0.5,
+    edgeSteps: 8,
+    skipVertexMap: true
+};
+
 /**
- * Tessellate an OCCT shape into mesh data
- * @param {Object} shape - TopoDS_Shape
- * @param {number} deflection - Mesh quality (smaller = finer, default 0.1)
- * @returns {Object} { positions, indices, normals, faceMap, edgeMap, vertexMap }
+ * Internal tessellation with configurable quality parameters.
  */
-export function tessellateShape(shape, deflection = 0.1) {
+function _tessellate(shape, opts) {
     const oc = getOC();
+
+    const deflection = opts.deflection ?? DEFAULTS.deflection;
+    const angDeflection = opts.angDeflection ?? DEFAULTS.angDeflection;
+    const edgeSteps = opts.edgeSteps ?? DEFAULTS.edgeSteps;
+    const skipVertexMap = opts.skipVertexMap ?? DEFAULTS.skipVertexMap;
 
     // Mesh the shape
     const mesher = new oc.BRepMesh_IncrementalMesh_2(
         shape,
         deflection,
-        false,      // isRelative
-        0.25,       // angDeflection (radians, ~14° — smoother fillet curves)
-        false       // isInParallel
+        false,          // isRelative
+        angDeflection,  // radians
+        false           // isInParallel
     );
     mesher.Perform_1(new oc.Message_ProgressRange_1());
 
@@ -166,9 +182,8 @@ export function tessellateShape(shape, deflection = 0.1) {
             const last = adaptor.LastParameter();
 
             // Sample the curve at uniform intervals
-            const steps = 24;
-            for (let i = 0; i <= steps; i++) {
-                const t = first + (last - first) * (i / steps);
+            for (let i = 0; i <= edgeSteps; i++) {
+                const t = first + (last - first) * (i / edgeSteps);
                 const pt = adaptor.Value(t);
                 edgeVertices.push({ x: pt.X(), y: pt.Y(), z: pt.Z() });
                 pt.delete();
@@ -189,25 +204,27 @@ export function tessellateShape(shape, deflection = 0.1) {
     edgeExplorer.delete();
 
     // === VERTICES (point positions for vertex selection) ===
-    let vIndex = 0;
-    const vertexExplorer = new oc.TopExp_Explorer_2(
-        shape,
-        oc.TopAbs_ShapeEnum.TopAbs_VERTEX,
-        oc.TopAbs_ShapeEnum.TopAbs_SHAPE
-    );
+    if (!skipVertexMap) {
+        let vIndex = 0;
+        const vertexExplorer = new oc.TopExp_Explorer_2(
+            shape,
+            oc.TopAbs_ShapeEnum.TopAbs_VERTEX,
+            oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+        );
 
-    while (vertexExplorer.More()) {
-        const vertex = oc.TopoDS.Vertex_1(vertexExplorer.Current());
-        const pt = oc.BRep_Tool.Pnt(vertex);
-        vertexMap.push({
-            vertexIndex: vIndex,
-            position: { x: pt.X(), y: pt.Y(), z: pt.Z() }
-        });
-        pt.delete();
-        vIndex++;
-        vertexExplorer.Next();
+        while (vertexExplorer.More()) {
+            const vertex = oc.TopoDS.Vertex_1(vertexExplorer.Current());
+            const pt = oc.BRep_Tool.Pnt(vertex);
+            vertexMap.push({
+                vertexIndex: vIndex,
+                position: { x: pt.X(), y: pt.Y(), z: pt.Z() }
+            });
+            pt.delete();
+            vIndex++;
+            vertexExplorer.Next();
+        }
+        vertexExplorer.delete();
     }
-    vertexExplorer.delete();
 
     mesher.delete();
 
@@ -219,4 +236,24 @@ export function tessellateShape(shape, deflection = 0.1) {
         edgeMap,
         vertexMap
     };
+}
+
+/**
+ * Tessellate an OCCT shape into mesh data (full quality, for commits).
+ * @param {Object} shape - TopoDS_Shape
+ * @param {number} deflection - Mesh quality (smaller = finer, default 0.1)
+ * @returns {Object} { positions, indices, normals, faceMap, edgeMap, vertexMap }
+ */
+export function tessellateShape(shape, deflection = 0.1) {
+    return _tessellate(shape, { ...DEFAULTS, deflection });
+}
+
+/**
+ * Tessellate an OCCT shape for preview display (coarser, faster).
+ * Skips vertex map exploration and uses fewer edge curve steps.
+ * @param {Object} shape - TopoDS_Shape
+ * @returns {Object} { positions, indices, normals, faceMap, edgeMap, vertexMap }
+ */
+export function tessellateShapeForPreview(shape) {
+    return _tessellate(shape, PREVIEW);
 }

@@ -470,20 +470,34 @@ function createBodyData(sketch, height) {
 
                 if (parentShape) {
                     let resultShape;
-                    if (height > 0) {
-                        resultShape = booleanFuse(parentShape, extrudedShape);
-                    } else {
-                        resultShape = booleanCut(parentShape, extrudedShape);
+                    try {
+                        if (height > 0) {
+                            resultShape = booleanFuse(parentShape, extrudedShape);
+                        } else {
+                            resultShape = booleanCut(parentShape, extrudedShape);
+                        }
+                    } catch (boolErr) {
+                        // Boolean failed — fall through to standalone path
+                        console.warn('OCCT: Boolean with parent failed, creating standalone extrusion:', boolErr.message || boolErr);
+                        resultShape = null;
                     }
-                    extrudedShape.delete();
 
-                    bodyData.occtShapeRef = storeShape(resultShape);
-                    bodyData.tessellation = tessellateShape(resultShape);
-                    bodyData.isFaceExtrusion = true;
-                    bodyData.parentBodyId = sketch.parentBodyId;
+                    if (resultShape && !resultShape.IsNull()) {
+                        extrudedShape.delete();
+                        bodyData.occtShapeRef = storeShape(resultShape);
+                        bodyData.tessellation = tessellateShape(resultShape);
+                        bodyData.isFaceExtrusion = true;
+                        bodyData.parentBodyId = sketch.parentBodyId;
 
-                    const opName = height > 0 ? 'fused' : 'cut';
-                    console.log(`OCCT: Face extrusion ${opName} — ${bodyData.tessellation.faceMap.length} faces, ${bodyData.tessellation.edgeMap.length} edges`);
+                        const opName = height > 0 ? 'fused' : 'cut';
+                        console.log(`OCCT: Face extrusion ${opName} — ${bodyData.tessellation.faceMap.length} faces, ${bodyData.tessellation.edgeMap.length} edges`);
+                    } else {
+                        // Boolean failed or produced null — add as standalone body
+                        if (resultShape) resultShape.delete();
+                        bodyData.occtShapeRef = storeShape(extrudedShape);
+                        bodyData.tessellation = tessellateShape(extrudedShape);
+                        console.warn('OCCT: Boolean produced invalid result, creating standalone extrusion');
+                    }
                 } else {
                     // No parent shape available — store standalone
                     bodyData.occtShapeRef = storeShape(extrudedShape);
@@ -492,9 +506,10 @@ function createBodyData(sketch, height) {
                 }
             }
         } catch (err) {
-            console.warn('OCCT: Face extrusion failed, falling back to standalone', err);
-            bodyData.occtShapeRef = null;
-            bodyData.tessellation = null;
+            console.warn('OCCT: Face extrusion failed:', err.message || err);
+            // Don't set isFaceExtrusion — bodyData stays as standalone (non-face)
+            // with null shape/tessellation, which means commit callback adds a new
+            // (empty) body instead of destroying the parent
         }
 
         return bodyData;

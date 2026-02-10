@@ -6,7 +6,8 @@
 import { getBodyById } from '../core/state.js';
 import { getShape } from '../core/occtShapeStore.js';
 import { filletEdges, getEdgeByIndex, getAdjacentFaceNormals } from '../core/occtEngine.js';
-import { tessellateShape } from '../core/occtTessellate.js';
+import { tessellateShapeForPreview } from '../core/occtTessellate.js';
+import { createPreviewScheduler } from '../core/previewScheduler.js';
 import { showDimensions, hideDimensions, makeDimensionClickable, makeDimensionNotClickable } from '../render/dimensionRender.js';
 import { showDimensionInput, hideInput } from '../ui/dimensionInput.js';
 import { updateTessellationPreview, clearBodyPreview, hideBodyMesh, showBodyMesh } from '../render/bodyRender.js';
@@ -31,7 +32,7 @@ const filletMode = {
     lastPreviewRadius: -1,
     lastValidTessellation: null,
     lastValidRadius: 0,
-    debounceTimer: null,
+    scheduler: null,
     cleanup: null
 };
 
@@ -77,7 +78,7 @@ function tryFilletPreview(bodyId, edgeIndices, radius) {
 
     try {
         const filletedShape = filletEdges(shape, edges, radius);
-        const tessellation = tessellateShape(filletedShape);
+        const tessellation = tessellateShapeForPreview(filletedShape);
         filletedShape.delete();
 
         filletMode.lastPreviewRadius = radius;
@@ -114,7 +115,9 @@ export function startFilletMode(bodyId, edgeIndices, edgeMidpoint) {
     filletMode.lastPreviewRadius = -1;
     filletMode.lastValidTessellation = null;
     filletMode.lastValidRadius = 0;
-    filletMode.debounceTimer = null;
+    filletMode.scheduler = createPreviewScheduler((radius) => {
+        tryFilletPreview(bodyId, edgeIndices, radius);
+    });
     filletMode.handleDir = null;
     filletMode.screenAxisDir = null;
 
@@ -218,12 +221,9 @@ export function startFilletMode(bodyId, edgeIndices, edgeMidpoint) {
         // Make label clickable (once visible)
         makeDimensionClickable(openDimensionInput);
 
-        // Debounced OCCT fillet preview
+        // RAF-coalesced OCCT fillet preview
         if (Math.abs(radius - filletMode.lastPreviewRadius) > 0.02) {
-            if (filletMode.debounceTimer) clearTimeout(filletMode.debounceTimer);
-            filletMode.debounceTimer = setTimeout(() => {
-                tryFilletPreview(bodyId, edgeIndices, radius);
-            }, 100);
+            filletMode.scheduler.schedule(radius);
         }
     };
 
@@ -293,7 +293,7 @@ export function endFilletMode() {
     if (!filletMode.active) return;
     window.dispatchEvent(new CustomEvent('fromscratch:modeend'));
     if (filletMode.cleanup) filletMode.cleanup();
-    if (filletMode.debounceTimer) clearTimeout(filletMode.debounceTimer);
+    if (filletMode.scheduler) filletMode.scheduler.cancel();
     if (filletMode.bodyId) showBodyMesh(filletMode.bodyId);
     hideFilletHandle();
     filletMode.active = false;
